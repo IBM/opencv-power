@@ -470,6 +470,21 @@ public:
                                             max_val0 = v_max(max_val0, v0);
                                             max_val1 = v_max(max_val1, v1);
                                         }
+#elif CV_VSX
+                                        else if( stride_w == 2 )
+                                        for (int k = 0; k < kernel_w*kernel_h; k++)
+                                        {
+                                            int index = ofsptr[k];
+                                            static const vec_uchar16 permute_vector = {
+                                                0x00, 0x01, 0x02, 0x03,  0x08, 0x09, 0x0a, 0x0b,  0x10, 0x11, 0x12, 0x13,  0x18, 0x19, 0x1a, 0x1b
+                                            };
+                                            v_float32x4 v00 = v_load(srcData1 + index), v01 = v_load(srcData1 + index + 4);
+                                            v_float32x4 v0 = v_float32x4(vec_perm(v00.val, v01.val, permute_vector));
+                                            v_float32x4 v10 = v_load(srcData1 + index + 8), v11 = v_load(srcData1 + index + 12);
+                                            v_float32x4 v1 = v_float32x4(vec_perm(v10.val, v11.val, permute_vector));
+                                            max_val0 = v_max(max_val0, v0);
+                                            max_val1 = v_max(max_val1, v1);
+                                        }
 #endif
                                     else
                                         for (int k = 0; k < kernel_w*kernel_h; k++)
