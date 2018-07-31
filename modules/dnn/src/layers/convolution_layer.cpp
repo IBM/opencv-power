@@ -82,7 +82,21 @@ public:
     virtual bool supportBackend(int backendId) CV_OVERRIDE
     {
         if (backendId == DNN_BACKEND_INFERENCE_ENGINE)
-            return preferableTarget != DNN_TARGET_MYRIAD || type != "Deconvolution" || adjustPad == Size();
+        {
+            if (type == "Convolution")
+                return preferableTarget != DNN_TARGET_MYRIAD || dilation.width == dilation.height;
+            else
+            {
+                CV_Assert(type == "Deconvolution");
+                const int outGroupCn = blobs[0].size[1];  // Weights are in IOHW layout
+                const int group = numOutput / outGroupCn;
+                if (group != 1)
+                    return false;
+                if (preferableTarget == DNN_TARGET_OPENCL || preferableTarget == DNN_TARGET_OPENCL_FP16)
+                    return dilation.width == 1 && dilation.height == 1;
+                return true;
+            }
+        }
         else
             return backendId == DNN_BACKEND_OPENCV || backendId == DNN_BACKEND_HALIDE;
     }
@@ -546,7 +560,7 @@ public:
             int ngroups = ngroups_, batchSize = input_->size[0]*ngroups;
             int outW = output_->size[3], outH = output_->size[2], outCn = output_->size[1]/ngroups;
             int width = input_->size[3], height = input_->size[2], inpCn = input_->size[1]/ngroups;
-            int nstripes = nstripes_;
+            const int nstripes = nstripes_;
             int kernel_w = kernel_.width, kernel_h = kernel_.height;
             int pad_w = pad_.width, pad_h = pad_.height;
             int stride_w = stride_.width, stride_h = stride_.height;
@@ -573,7 +587,6 @@ public:
                 int samplesPerStripe = std::max((batchSize + nstripes - 1)/nstripes, 1);
                 r.start *= samplesPerStripe;
                 r.end *= samplesPerStripe;
-                nstripes *= samplesPerStripe;
                 stripeSize = outPlaneSize;
             }
 
@@ -586,7 +599,7 @@ public:
             float* data_out0_ = output_->ptr<float>();
             size_t rowbufsz = (size_t)karea*BLK_SIZE_CN*BLK_SIZE;
             AutoBuffer<float> rowbuf0_(rowbufsz + valign);
-            float* rowbuf0 = alignPtr((float*)rowbuf0_, (int)(valign*sizeof(float)));
+            float* rowbuf0 = alignPtr(rowbuf0_.data(), (int)(valign*sizeof(float)));
 
             // we clear the buffer once; ultimately, it lets us to avoid
             // tail processing after running the unrolled/vectorized loop.
@@ -851,6 +864,16 @@ public:
         CV_Assert(outputs.size() == 1);
         for (int i = 0; i < inputs.size(); ++i)
             CV_Assert(inputs[i].u != outputs[0].u);
+
+        if (umat_blobs.empty())
+        {
+            size_t n = blobs.size();
+            umat_blobs.resize(n);
+            for (size_t i = 0; i < n; i++)
+            {
+                blobs[i].copyTo(umat_blobs[i]);
+            }
+        }
 
         if (convolutionOp.empty())
         {
@@ -1623,14 +1646,6 @@ public:
 Ptr<BaseConvolutionLayer> ConvolutionLayer::create(const LayerParams &params)
 {
     Ptr<ConvolutionLayerImpl> l(new ConvolutionLayerImpl(params));
-
-#ifdef HAVE_OPENCL
-    size_t n = params.blobs.size();
-    l->umat_blobs.resize(n);
-    for (int i = 0; i < n; i++)
-        l->umat_blobs[i] = params.blobs[i].getUMat(ACCESS_READ);
-#endif
-
     return l;
 }
 

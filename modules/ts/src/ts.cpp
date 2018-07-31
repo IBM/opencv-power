@@ -255,8 +255,9 @@ void BaseTest::safe_run( int start_from )
             const char* errorStr = cvErrorStr(exc.code);
             char buf[1 << 16];
 
-            sprintf( buf, "OpenCV Error:\n\t%s (%s) in %s, file %s, line %d",
-                    errorStr, exc.err.c_str(), exc.func.size() > 0 ?
+            const char* delim = exc.err.find('\n') == cv::String::npos ? "" : "\n";
+            sprintf( buf, "OpenCV Error:\n\t%s (%s%s) in %s, file %s, line %d",
+                    errorStr, delim, exc.err.c_str(), exc.func.size() > 0 ?
                     exc.func.c_str() : "unknown function", exc.file.c_str(), exc.line );
             ts->printf(TS::LOG, "%s\n", buf);
 
@@ -384,7 +385,9 @@ int BadArgTest::run_test_case( int expected_code, const string& _descr )
     catch(const cv::Exception& e)
     {
         thrown = true;
-        if( e.code != expected_code )
+        if (e.code != expected_code &&
+            e.code != cv::Error::StsError && e.code != cv::Error::StsAssert  // Exact error codes support will be dropped. Checks should provide proper text messages intead.
+        )
         {
             ts->printf(TS::LOG, "%s (test case #%d): the error code %d is different from the expected %d\n",
                        descr, test_case_idx, e.code, expected_code);
@@ -471,7 +474,8 @@ string TS::str_from_code( const TS::FailureCode code )
 
 static int tsErrorCallback( int status, const char* func_name, const char* err_msg, const char* file_name, int line, TS* ts )
 {
-    ts->printf(TS::LOG, "OpenCV Error:\n\t%s (%s) in %s, file %s, line %d\n", cvErrorStr(status), err_msg, func_name[0] != 0 ? func_name : "unknown function", file_name, line);
+    const char* delim = std::string(err_msg).find('\n') == std::string::npos ? "" : "\n";
+    ts->printf(TS::LOG, "OpenCV Error:\n\t%s (%s%s) in %s, file %s, line %d\n", cvErrorStr(status), delim, err_msg, func_name[0] != 0 ? func_name : "unknown function", file_name, line);
     return 0;
 }
 
@@ -768,16 +772,24 @@ void addDataSearchSubDirectory(const std::string& subdir)
     TS::ptr()->data_search_subdir.push_back(subdir);
 }
 
-std::string findDataFile(const std::string& relative_path, bool required)
+static std::string findData(const std::string& relative_path, bool required, bool findDirectory)
 {
 #define TEST_TRY_FILE_WITH_PREFIX(prefix) \
 { \
     std::string path = path_join(prefix, relative_path); \
     /*printf("Trying %s\n", path.c_str());*/ \
-    FILE* f = fopen(path.c_str(), "rb"); \
-    if(f) { \
-       fclose(f); \
-       return path; \
+    if (findDirectory) \
+    { \
+        if (isDirectory(path)) \
+            return path; \
+    } \
+    else \
+    { \
+        FILE* f = fopen(path.c_str(), "rb"); \
+        if(f) { \
+            fclose(f); \
+            return path; \
+        } \
     } \
 }
 
@@ -838,11 +850,21 @@ std::string findDataFile(const std::string& relative_path, bool required)
     }
 #endif
 #endif
+    const char* type = findDirectory ? "directory" : "data file";
     if (required)
-        CV_Error(cv::Error::StsError, cv::format("OpenCV tests: Can't find required data file: %s", relative_path.c_str()));
-    throw SkipTestException(cv::format("OpenCV tests: Can't find data file: %s", relative_path.c_str()));
+        CV_Error(cv::Error::StsError, cv::format("OpenCV tests: Can't find required %s: %s", type, relative_path.c_str()));
+    throw SkipTestException(cv::format("OpenCV tests: Can't find %s: %s", type, relative_path.c_str()));
 }
 
+std::string findDataFile(const std::string& relative_path, bool required)
+{
+    return findData(relative_path, required, false);
+}
+
+std::string findDataDirectory(const std::string& relative_path, bool required)
+{
+    return findData(relative_path, required, true);
+}
 
 } //namespace cvtest
 

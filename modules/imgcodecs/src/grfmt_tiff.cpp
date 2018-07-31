@@ -255,22 +255,21 @@ bool TiffDecoder::readHeader()
             {
                 case 8:
                     m_type = CV_MAKETYPE(CV_8U, photometric > 1 ? wanted_channels : 1);
+                    result = true;
                     break;
                 case 16:
                     m_type = CV_MAKETYPE(CV_16U, photometric > 1 ? wanted_channels : 1);
+                    result = true;
                     break;
-
                 case 32:
                     m_type = CV_MAKETYPE(CV_32F, photometric > 1 ? 3 : 1);
+                    result = true;
                     break;
                 case 64:
                     m_type = CV_MAKETYPE(CV_64F, photometric > 1 ? 3 : 1);
+                    result = true;
                     break;
-
-                default:
-                    result = false;
             }
-            result = true;
         }
     }
 
@@ -355,7 +354,7 @@ bool  TiffDecoder::readData( Mat& img )
             }
             const size_t buffer_size = (bpp/bitsPerByte) * ncn * tile_height0 * tile_width0;
             AutoBuffer<uchar> _buffer( buffer_size );
-            uchar* buffer = _buffer;
+            uchar* buffer = _buffer.data();
             ushort* buffer16 = (ushort*)buffer;
             float* buffer32 = (float*)buffer;
             double* buffer64 = (double*)buffer;
@@ -834,7 +833,7 @@ bool TiffEncoder::writeLibTiff( const std::vector<Mat>& img_vec, const std::vect
         // row buffer, because TIFFWriteScanline modifies the original data!
         size_t scanlineSize = TIFFScanlineSize(pTiffHandle);
         AutoBuffer<uchar> _buffer(scanlineSize + 32);
-        uchar* buffer = _buffer;
+        uchar* buffer = _buffer.data();
         if (!buffer)
         {
             TIFFClose(pTiffHandle);

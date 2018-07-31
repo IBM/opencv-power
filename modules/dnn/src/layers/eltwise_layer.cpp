@@ -97,8 +97,8 @@ public:
     virtual bool supportBackend(int backendId) CV_OVERRIDE
     {
         return backendId == DNN_BACKEND_OPENCV ||
-               backendId == DNN_BACKEND_HALIDE && haveHalide() ||
-               backendId == DNN_BACKEND_INFERENCE_ENGINE && haveInfEngine();
+               backendId == DNN_BACKEND_HALIDE ||
+               backendId == DNN_BACKEND_INFERENCE_ENGINE && (op != SUM || coeffs.empty());
     }
 
     bool getMemoryShapes(const std::vector<MatShape> &inputs,
@@ -187,7 +187,7 @@ public:
             int c, j, k, n = nsrcs;
             const float* coeffsptr = coeffs && !coeffs->empty() ? &coeffs->at(0) : 0;
             float* dstptr0 = dst->ptr<float>();
-            int blockSize0 = 1 << 12, blockSize = blockSize0;
+            int blockSize0 = 1 << 12, blockSize;
 
             for( size_t ofs = stripeStart; ofs < stripeEnd; ofs += blockSize )
             {

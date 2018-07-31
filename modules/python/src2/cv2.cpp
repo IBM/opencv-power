@@ -189,7 +189,7 @@ public:
             _sizes[i] = sizes[i];
         if( cn > 1 )
             _sizes[dims++] = cn;
-        PyObject* o = PyArray_SimpleNew(dims, _sizes, typenum);
+        PyObject* o = PyArray_SimpleNew(dims, _sizes.data(), typenum);
         if(!o)
             CV_Error_(Error::StsError, ("The numpy array of typenum=%d, ndims=%d can not be created", typenum, dims));
         return allocate(o, dims0, sizes, type, step);
@@ -916,7 +916,7 @@ bool pyopencv_to(PyObject* obj, String& value, const char* name)
     (void)name;
     if(!obj || obj == Py_None)
         return true;
-    char* str = PyString_AsString(obj);
+    const char* str = PyString_AsString(obj);
     if(!str)
         return false;
     value = String(str);
@@ -1563,8 +1563,6 @@ PyObject* pyopencv_from(const Moments& m)
                          "nu30", m.nu30, "nu21", m.nu21, "nu12", m.nu12, "nu03", m.nu03);
 }
 
-#include "pyopencv_custom_headers.h"
-
 static int OnError(int status, const char *func_name, const char *err_msg, const char *file_name, int line, void *userdata)
 {
     PyGILState_STATE gstate;
@@ -1802,6 +1800,7 @@ static int convert_to_char(PyObject *o, char *dst, const char *name = "no_name")
 #  pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 #endif
 
+#include "pyopencv_custom_headers.h"
 #include "pyopencv_generated_types.h"
 #include "pyopencv_generated_funcs.h"
 

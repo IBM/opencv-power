@@ -100,7 +100,7 @@ static void runTorchNet(String prefix, int targetId = DNN_TARGET_CPU, String out
     }
 }
 
-typedef testing::TestWithParam<DNNTarget> Test_Torch_layers;
+typedef testing::TestWithParam<Target> Test_Torch_layers;
 
 TEST_P(Test_Torch_layers, run_convolution)
 {
@@ -208,7 +208,7 @@ TEST_P(Test_Torch_layers, net_non_spatial)
 
 INSTANTIATE_TEST_CASE_P(/**/, Test_Torch_layers, availableDnnTargets());
 
-typedef testing::TestWithParam<DNNTarget> Test_Torch_nets;
+typedef testing::TestWithParam<Target> Test_Torch_nets;
 
 TEST_P(Test_Torch_nets, OpenFace_accuracy)
 {
@@ -296,7 +296,6 @@ TEST_P(Test_Torch_nets, FastNeuralStyle_accuracy)
         Mat inputBlob = blobFromImage(img, 1.0, Size(), Scalar(103.939, 116.779, 123.68), false);
 
         net.setInput(inputBlob);
-        net.setPreferableBackend(DNN_BACKEND_OPENCV);
         Mat out = net.forward();
 
         // Deprocessing.

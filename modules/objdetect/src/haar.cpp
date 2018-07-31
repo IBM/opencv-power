@@ -67,6 +67,11 @@
 #  endif
 #endif
 
+#if defined __GNUC__ && __GNUC__ >= 8
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wclass-memaccess"
+#endif
+
 /* these settings affect the quality of detection: change with care */
 #define CV_ADJUST_FEATURES 1
 #define CV_ADJUST_WEIGHTS  0
@@ -599,7 +604,7 @@ cvSetImagesForHaarClassifierCascade( CvHaarClassifierCascade* _cascade,
                     else
                         sum0 += hidfeature->rect[k].weight * tr.width * tr.height;
                 }
-
+                CV_Assert(area0 > 0);
                 hidfeature->rect[0].weight = (float)(-sum0/area0);
             } /* l */
         } /* j */
@@ -2714,6 +2719,9 @@ double icvEvalHidHaarStumpClassifierTwoRectVSX(CvHidHaarClassifier* classifier,
 
     return v_reduce_sum(out1);
 }
+
+#if defined __GNUC__ && __GNUC__ >= 8
+#pragma GCC diagnostic pop
 #endif
 
 /* End of file. */
