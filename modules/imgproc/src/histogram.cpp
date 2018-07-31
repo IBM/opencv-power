@@ -41,7 +41,7 @@
 
 #include "precomp.hpp"
 #include "opencl_kernels_imgproc.hpp"
-
+#include "opencv2/core/hal/intrin.hpp"
 #include "opencv2/core/openvx/ovx_defs.hpp"
 
 namespace cv
@@ -1940,6 +1940,8 @@ double cv::compareHist( InputArray _H1, InputArray _H2, int method )
 
 #if CV_SSE2
     bool haveSIMD = checkHardwareSupport(CV_CPU_SSE2);
+#elif CV_VSX
+    bool haveVSX = checkHardwareSupport(CV_CPU_VSX);
 #endif
 
     for( size_t i = 0; i < it.nplanes; i++, ++it )
@@ -2004,6 +2006,41 @@ double cv::compareHist( InputArray _H1, InputArray _H2, int method )
                 s1 += ar[6] + ar[7];
                 s2 += ar[8] + ar[9];
             }
+            #elif CV_VSX
+            if (haveVSX){
+               v_float64x2 v_s1 = v_setall_f64(0), v_s2 = v_s1;
+               v_float64x2 v_s11= v_s1, v_s22 = v_s1, v_s12 = v_s1;
+               v_float64x2 v_ad0, v_ad1, v_bd0,v_bd1;
+
+               for(; j <= len - 4; j+=4)
+               {
+                   v_float32x4 v_a = v_load(h1 + j);
+                   v_float32x4 v_b = v_load(h2 + j);
+                   v_ad0 = v_cvt_f64(v_a);
+                   v_ad1 = v_cvt_f64_high(v_a);
+                   v_bd0 = v_cvt_f64(v_b);
+                   v_bd1 = v_cvt_f64_high(v_b);
+
+                   v_s12 = v_ad0 * v_bd0 + v_s12;
+                   v_s11 = v_ad0 * v_ad0 + v_s11;
+                   v_s22 = v_bd0 * v_bd0 + v_s22;
+                   v_s1  = v_ad0 + v_s1;
+                   v_s2  = v_bd0 + v_s2;
+
+                   v_s12 = v_ad1 * v_bd1 + v_s12;
+                   v_s11 = v_ad1 * v_ad1 + v_s11;
+                   v_s22 = v_bd1 * v_bd1 + v_s22;
+                   v_s1  = v_ad1 + v_s1;
+                   v_s2  = v_bd1 + v_s2;
+               }
+
+               //reverse the vector then add them together vec(0) + vec(1)
+               s12 += v_reduce_sum(v_s12);
+               s1  += v_reduce_sum(v_s1);
+               s11 += v_reduce_sum(v_s11);
+               s2  += v_reduce_sum(v_s2);
+               s22 += v_reduce_sum(v_s22);
+            }
             #endif
             for( ; j < len; j++ )
             {
@@ -2043,6 +2080,18 @@ double cv::compareHist( InputArray _H1, InputArray _H2, int method )
                 _mm_store_pd(ar, v_result);
                 result += ar[0] + ar[1];
             }
+            #elif CV_VSX
+            if(haveVSX)
+            {
+                // shall we use double precision?
+                v_float32x4 v_result = v_setall_f32(0);
+                for ( ; j <= len - 4; j += 4)
+                {
+                   v_float32x4 v_src = v_min(v_load(h1+j), v_load(h2+j));
+                   v_result = v_result + v_src;
+                }
+                result += v_reduce_sum(v_result);
+            }
             #endif
             for( ; j < len; j++ )
                 result += std::min(h1[j], h2[j]);
@@ -2078,6 +2127,33 @@ double cv::compareHist( InputArray _H1, InputArray _H2, int method )
                 s1 += ar[0] + ar[1];
                 s2 += ar[2] + ar[3];
                 result += ar[4] + ar[5];
+            }
+            #elif CV_VSX
+            if(haveVSX)
+            {
+               v_float64x2 v_s1 = v_setall_f64(0),v_s2=v_s1;
+               v_float64x2 v_result=v_s1, v_ad=v_s1, v_bd=v_s1,v_tmp = v_s1;
+               for ( ; j <= len - 4; j += 4) {
+                  v_float32x4 v_a = v_load(h1+j);
+                  v_float32x4 v_b = v_load(h2+j);
+
+                  v_ad = v_cvt_f64(v_a);
+                  v_bd = v_cvt_f64(v_b);
+                  v_tmp = v_sqrt(v_ad * v_bd);
+                  v_result= v_result + v_tmp;
+                  v_s1 = v_ad + v_s1;
+                  v_s2 = v_bd + v_s2;
+
+                  v_ad = v_cvt_f64_high(v_a);
+                  v_bd = v_cvt_f64_high(v_b);
+                  v_tmp = v_sqrt(v_ad * v_bd);
+                  v_result = v_result + v_tmp;
+                  v_s1 = v_ad + v_s1;
+                  v_s2 = v_bd + v_s2;
+               }
+               result += v_reduce_sum(v_result);
+               s1 += v_reduce_sum(v_s1);
+               s2 += v_reduce_sum(v_s2);
             }
             #endif
             for( ; j < len; j++ )

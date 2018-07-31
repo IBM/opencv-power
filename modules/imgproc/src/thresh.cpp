@@ -191,7 +191,7 @@ thresh_8u( const Mat& _src, Mat& _dst, uchar thresh, uchar maxval, int type )
     const uchar* src = _src.ptr();
     uchar* dst = _dst.ptr();
 #if CV_SIMD128
-    bool useSIMD = checkHardwareSupport( CV_CPU_SSE2 ) || checkHardwareSupport( CV_CPU_NEON );
+    bool useSIMD = checkHardwareSupport( CV_CPU_SSE2 ) || checkHardwareSupport( CV_CPU_NEON ) || checkHardwareSupport( CV_CPU_VSX );
     if( useSIMD )
     {
         v_uint8x16 thresh_u = v_setall_u8( thresh );
@@ -356,7 +356,7 @@ thresh_16u(const Mat& _src, Mat& _dst, ushort thresh, ushort maxval, int type)
     const ushort* src = _src.ptr<ushort>();
     ushort* dst = _dst.ptr<ushort>();
 #if CV_SIMD128
-    bool useSIMD = checkHardwareSupport(CV_CPU_SSE2) || checkHardwareSupport(CV_CPU_NEON);
+    bool useSIMD = checkHardwareSupport(CV_CPU_SSE2) || checkHardwareSupport(CV_CPU_NEON) || checkHardwareSupport( CV_CPU_VSX );
     if (useSIMD)
     {
         int i, j;
@@ -545,7 +545,7 @@ thresh_16s( const Mat& _src, Mat& _dst, short thresh, short maxval, int type )
 #endif
 
 #if CV_SIMD128
-    bool useSIMD = checkHardwareSupport( CV_CPU_SSE2 ) || checkHardwareSupport( CV_CPU_NEON );
+    bool useSIMD = checkHardwareSupport( CV_CPU_SSE2 ) || checkHardwareSupport( CV_CPU_NEON ) || checkHardwareSupport( CV_CPU_VSX );
     if( useSIMD )
     {
         int i, j;
@@ -720,7 +720,7 @@ thresh_32f( const Mat& _src, Mat& _dst, float thresh, float maxval, int type )
 #endif
 
 #if CV_SIMD128
-    bool useSIMD = checkHardwareSupport( CV_CPU_SSE2 ) || checkHardwareSupport( CV_CPU_NEON );
+    bool useSIMD = checkHardwareSupport( CV_CPU_SSE2 ) || checkHardwareSupport( CV_CPU_NEON ) || checkHardwareSupport( CV_CPU_VSX );
     if( useSIMD )
     {
         int i, j;
@@ -860,7 +860,7 @@ thresh_64f(const Mat& _src, Mat& _dst, double thresh, double maxval, int type)
     }
 
 #if CV_SIMD128_64F
-    bool useSIMD = checkHardwareSupport( CV_CPU_SSE2 ) || checkHardwareSupport( CV_CPU_NEON );
+    bool useSIMD = checkHardwareSupport( CV_CPU_SSE2 ) || checkHardwareSupport( CV_CPU_NEON ) || checkHardwareSupport( CV_CPU_VSX );
     if( useSIMD )
     {
         int i, j;

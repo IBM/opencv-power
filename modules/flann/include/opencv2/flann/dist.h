@@ -51,6 +51,8 @@ typedef unsigned __int64 uint64_t;
 # include "arm_neon.h"
 #endif
 
+#include "opencv2/core/hal/intrin.hpp"
+
 namespace cvflann
 {
 
@@ -441,6 +443,66 @@ struct Hamming
             result = vgetq_lane_s32 (vreinterpretq_s32_u64(bitSet2),0);
             result += vgetq_lane_s32 (vreinterpretq_s32_u64(bitSet2),2);
         }
+#elif CV_VSX
+        {
+            using namespace cv;
+#define V_ROTATE_BYTE(_vec, _bytes, direction) \
+    do {\
+    switch (_bytes) {\
+        case 1: _vec = v_rotate_##direction##_byte<1>(_vec);break;\
+        case 2: _vec = v_rotate_##direction##_byte<2>(_vec);break;\
+        case 3: _vec = v_rotate_##direction##_byte<3>(_vec);break;\
+        case 4: _vec = v_rotate_##direction##_byte<4>(_vec);break;\
+        case 5: _vec = v_rotate_##direction##_byte<5>(_vec);break;\
+        case 6: _vec = v_rotate_##direction##_byte<6>(_vec);break;\
+        case 7: _vec = v_rotate_##direction##_byte<7>(_vec);break;\
+        case 8: _vec = v_rotate_##direction##_byte<8>(_vec);break;\
+        case 9: _vec = v_rotate_##direction##_byte<9>(_vec);break;\
+        case 10: _vec = v_rotate_##direction##_byte<10>(_vec);break;\
+        case 11: _vec = v_rotate_##direction##_byte<11>(_vec);break;\
+        case 12: _vec = v_rotate_##direction##_byte<12>(_vec);break;\
+        case 13: _vec = v_rotate_##direction##_byte<13>(_vec);break;\
+        case 14: _vec = v_rotate_##direction##_byte<14>(_vec);break;\
+        case 15: _vec = v_rotate_##direction##_byte<15>(_vec);break;\
+        default:break;\
+    } \
+    } while(0)
+
+            const size_t modulo = size % 16;
+
+            v_uint32x4 bits = v_setzero_u32();
+            v_uint8x16 A_vec;
+            v_uint8x16 B_vec;
+            v_uint8x16 AxorB;
+            size_t i;
+
+            for (i = 0; i + 15 < size; i += 16) {
+                 A_vec = v_load((uchar*)a + i);
+                 B_vec = v_load((uchar*)b + i);
+                 AxorB = A_vec ^ B_vec;
+                 bits += v_popcount(AxorB);
+            }
+
+            if (modulo) {
+                 /* caculate the left bytes */
+                 A_vec = v_load((uchar*)a + i);
+                 B_vec = v_load((uchar*)b + i);
+#ifdef __LITTLE_ENDIAN__
+                 V_ROTATE_BYTE(A_vec, (16 - modulo), left);
+                 V_ROTATE_BYTE(B_vec, (16 - modulo), left);
+#else
+                 V_ROTATE_BYTE(A_vec, (16 - modulo), right);
+                 V_ROTATE_BYTE(B_vec, (16 - modulo), right);
+#endif
+                 AxorB = A_vec ^ B_vec;
+                 bits += v_popcount(AxorB);
+            }
+
+            result += vec_extract(bits.val, 0);
+            result += vec_extract(bits.val, 1);
+            result += vec_extract(bits.val, 2);
+            result += vec_extract(bits.val, 3);
+        }
 #elif __GNUC__
         {
             //for portability just use unsigned long -- and use the __builtin_popcountll (see docs for __builtin_popcountll)
@@ -461,7 +523,7 @@ struct Hamming
                 result += __builtin_popcountll(a_final ^ b_final);
             }
         }
-#else // NO NEON and NOT GNUC
+#else // NO NEON, NO VSX and NOT GNUC
         typedef unsigned long long pop_t;
         HammingLUT lut;
         result = lut(reinterpret_cast<const unsigned char*> (a),

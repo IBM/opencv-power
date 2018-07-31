@@ -153,6 +153,19 @@ VSX_FINLINE(rt) fnm(const rg& a, const rg& b)  \
     VSX_REDIRECT_2RG(vec_udword2, vec_udword2, vec_mul, __builtin_vec_mul)
 #endif // __GNUG__ < 7
 
+/* It is actually for multiplying and get the higher bits.
+ *   it is the equivalent with _mm_mulhi_epi16, etc
+ */
+#   define VSX_IMPL_MUL_HIGH(Tvec, Tcast)                                           \
+    VSX_FINLINE(Tvec) vec_mul_hi(const Tvec& a, const Tvec& b)                      \
+    {                                                                               \
+        static const vec_uchar16 even_perm = {2, 3, 18, 19, 6, 7, 22, 23,           \
+                                              10, 11, 26, 27, 14, 15, 30, 31};      \
+        return vec_perm(Tcast(vec_mule(a, b)), Tcast(vec_mulo(a, b)), even_perm);   \
+    }
+
+    VSX_IMPL_MUL_HIGH(vec_ushort8, vec_ushort8_c)
+
 #if __GNUG__ < 6
 /*
  * Instruction "compare greater than or equal" in ISA 2.07 only supports single
@@ -419,6 +432,15 @@ VSX_IMPL_CONVERT(vec_udword2, vec_double2, vec_ctul)
 VSX_FINLINE(vec_udword2) vec_ctulo(const vec_float4& a)
 { return vec_ctul(vec_cvfo(a)); }
 
+#   define VSX_IMPL_MUL_HIGH(Tvec, Tcast)                                           \
+    VSX_FINLINE(Tvec) vec_mul_hi(const Tvec& a, const Tvec& b)                      \
+    {                                                                               \
+        static const vec_uchar16 even_perm = {2, 3, 18, 19, 6, 7, 22, 23,           \
+                                              10, 11, 26, 27, 14, 15, 30, 31};      \
+        return vec_perm(Tcast(vec_mule(a, b)), Tcast(vec_mulo(a, b)), even_perm);   \
+    }
+    VSX_IMPL_MUL_HIGH(vec_ushort8, vec_ushort8_c)
+
 #endif // CLANG VSX compatibility
 
 /*
@@ -651,8 +673,13 @@ VSX_IMPL_LOAD_L8(vec_double2, double)
 #endif
 
 // absolute difference
+#undef vec_absd
 #ifndef vec_absd
 #   define vec_absd(a, b) vec_sub(vec_max(a, b), vec_min(a, b))
+#endif
+#undef vec_absds
+#ifndef vec_absds
+#   define vec_absds(a, b) vec_subs(vec_max(a, b), vec_min(a, b))
 #endif
 
 /*
@@ -731,6 +758,16 @@ VSX_REDIRECT_2RG(vec_dword2,  vec_dword2,  vec_mergesql, vec_mergel)
 VSX_REDIRECT_2RG(vec_double2, vec_double2, vec_mergesqh, vec_mergeh)
 VSX_REDIRECT_2RG(vec_double2, vec_double2, vec_mergesql, vec_mergel)
 
+/*
+ * Implement interleave vec_mergesqh and vec_mergesql
+ * Merges according to vec type instead of 64 bits like the above.
+ */
+VSX_REDIRECT_2RG(vec_uchar16, vec_uchar16, vec_interleave_mergeh, vec_mergeh)
+VSX_REDIRECT_2RG(vec_uchar16, vec_uchar16, vec_interleave_mergel, vec_mergel)
+VSX_REDIRECT_2RG(vec_ushort8, vec_ushort8, vec_interleave_mergeh, vec_mergeh)
+VSX_REDIRECT_2RG(vec_ushort8, vec_ushort8, vec_interleave_mergel, vec_mergel)
+VSX_REDIRECT_2RG(vec_uint4, vec_uint4, vec_interleave_mergeh, vec_mergeh)
+VSX_REDIRECT_2RG(vec_uint4, vec_uint4, vec_interleave_mergel, vec_mergel)
 
 // 2 and 4 channels interleave for all types except 2 lanes
 #define VSX_IMPL_ST_INTERLEAVE(Tp, Tvec)                                    \

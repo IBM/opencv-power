@@ -471,7 +471,7 @@ public:
                                             max_val1 = v_max(max_val1, v1);
                                         }
 #elif CV_VSX
-                                        else if( stride_w == 2 )
+                                    else if( stride_w == 2 )
                                         for (int k = 0; k < kernel_w*kernel_h; k++)
                                         {
                                             int index = ofsptr[k];

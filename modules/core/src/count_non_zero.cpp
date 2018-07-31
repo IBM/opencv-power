@@ -70,6 +70,15 @@ static int countNonZero8u( const uchar* src, int len )
     CV_DECL_ALIGNED(16) unsigned int buf[4];
     vst1q_u32(buf, v_nz);
     nz += i - saturate_cast<int>(buf[0] + buf[1] + buf[2] + buf[3]);
+#elif CV_VSX
+    v_int8x16 v_zero = v_setzero_s8();
+    int sum = 0;
+    for (; i<=len-16; i+=16) {
+            v_int8x16 v_val = v_load((schar *)(src + i));
+            v_int8x16 v_res = v_zero - (v_zero == v_val);
+            sum += v_reduce_sum(v_res);
+    }
+    nz = i - sum;
 #endif
     for( ; i < len; i++ )
         nz += src[i] != 0;
@@ -123,6 +132,16 @@ static int countNonZero16u( const ushort* src, int len )
     CV_DECL_ALIGNED(16) unsigned int buf[4];
     vst1q_u32(buf, v_nz);
     nz += i - saturate_cast<int>(buf[0] + buf[1] + buf[2] + buf[3]);
+#elif CV_VSX
+    v_int16x8 v_zero = v_setzero_s16();
+    int sum = 0;
+    for (; i<=len-8; i+=8) {
+            v_int16x8 v_val = v_load((short *)(src + i));
+            v_int16x8 v_res = v_zero - (v_zero == v_val);
+            sum += v_reduce_sum(v_res);
+    }
+    nz = i - sum;
+    src += i;
 #endif
     return nz + countNonZero_(src, len - i);
 }
@@ -176,6 +195,16 @@ static int countNonZero32s( const int* src, int len )
     CV_DECL_ALIGNED(16) unsigned int buf[4];
     vst1q_u32(buf, v_nz);
     nz += i - saturate_cast<int>(buf[0] + buf[1] + buf[2] + buf[3]);
+#elif CV_VSX
+    v_int32x4 v_zero = v_setzero_s32();
+    int sum = 0;
+    for (; i<=len-4; i+=4) {
+            v_int32x4 v_val = v_load((int *)(src + i));
+            v_int32x4 v_res = v_zero - (v_zero == v_val);
+            sum += v_reduce_sum(v_res);
+    }
+    nz = i - sum;
+    src += i;
 #endif
     return nz + countNonZero_(src, len - i);
 }
@@ -230,6 +259,17 @@ static int countNonZero32f( const float* src, int len )
     CV_DECL_ALIGNED(16) unsigned int buf[4];
     vst1q_u32(buf, v_nz);
     nz += i - saturate_cast<int>(buf[0] + buf[1] + buf[2] + buf[3]);
+#elif CV_VSX
+    v_int32x4 v_zero = v_setzero_s32();
+    v_float32x4 v_zero_f = v_setzero_f32();
+    int sum = 0;
+    for (; i<=len-4; i+=4) {
+            v_float32x4 v_val = v_load(src + i);
+            v_int32x4 v_res = v_zero - (v_int32x4)((vec_int4)((v_zero_f == v_val).val));
+            sum += v_reduce_sum(v_res);
+    }
+    nz = i - sum;
+    src += i;
 #endif
     return nz + countNonZero_(src, len - i);
 }

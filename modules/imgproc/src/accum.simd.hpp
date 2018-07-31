@@ -10,6 +10,7 @@ void acc_##suffix(const type* src, acctype* dst, \
 { \
     CV_CPU_CALL_NEON(acc_simd_, (src, dst, mask, len, cn)); \
     CV_CPU_CALL_SSE2(acc_simd_, (src, dst, mask, len, cn)); \
+    CV_CPU_CALL_VSX(acc_simd_, (src, dst, mask, len, cn)); \
     CV_CPU_CALL_BASELINE(acc_general_, (src, dst, mask, len, cn)); \
 } \
 void accSqr_##suffix(const type* src, acctype* dst, \
@@ -17,6 +18,7 @@ void accSqr_##suffix(const type* src, acctype* dst, \
 { \
     CV_CPU_CALL_NEON(accSqr_simd_, (src, dst, mask, len, cn)); \
     CV_CPU_CALL_SSE2(accSqr_simd_, (src, dst, mask, len, cn)); \
+    CV_CPU_CALL_VSX(accSqr_simd_, (src, dst, mask, len, cn)); \
     CV_CPU_CALL_BASELINE(accSqr_general_, (src, dst, mask, len, cn)); \
 } \
 void accProd_##suffix(const type* src1, const type* src2, \
@@ -24,6 +26,7 @@ void accProd_##suffix(const type* src1, const type* src2, \
 { \
     CV_CPU_CALL_NEON(accProd_simd_, (src1, src2, dst, mask, len, cn)); \
     CV_CPU_CALL_SSE2(accProd_simd_, (src1, src2, dst, mask, len, cn)); \
+    CV_CPU_CALL_VSX(accProd_simd_, (src1, src2, dst, mask, len, cn)); \
     CV_CPU_CALL_BASELINE(accProd_general_, (src1, src2, dst, mask, len, cn)); \
 } \
 void accW_##suffix(const type* src, acctype* dst, \
@@ -31,6 +34,7 @@ void accW_##suffix(const type* src, acctype* dst, \
 { \
     CV_CPU_CALL_NEON(accW_simd_, (src, dst, mask, len, cn, alpha)); \
     CV_CPU_CALL_SSE2(accW_simd_, (src, dst, mask, len, cn, alpha)); \
+    CV_CPU_CALL_VSX(accW_simd_, (src, dst, mask, len, cn, alpha)); \
     CV_CPU_CALL_BASELINE(accW_general_, (src, dst, mask, len, cn, alpha)); \
 }
 #define DEF_ACC_FLT_FUNCS(suffix, type, acctype) \
@@ -40,6 +44,7 @@ void acc_##suffix(const type* src, acctype* dst, \
     CV_CPU_CALL_AVX(acc_avx_##suffix, (src, dst, mask, len, cn)); \
     CV_CPU_CALL_NEON(acc_simd_, (src, dst, mask, len, cn)); \
     CV_CPU_CALL_SSE2(acc_simd_, (src, dst, mask, len, cn)); \
+    CV_CPU_CALL_VSX(acc_simd_, (src, dst, mask, len, cn)); \
     CV_CPU_CALL_BASELINE(acc_general_, (src, dst, mask, len, cn)); \
 } \
 void accSqr_##suffix(const type* src, acctype* dst, \
@@ -48,6 +53,7 @@ void accSqr_##suffix(const type* src, acctype* dst, \
     CV_CPU_CALL_AVX(accSqr_avx_##suffix, (src, dst, mask, len, cn)); \
     CV_CPU_CALL_NEON(accSqr_simd_, (src, dst, mask, len, cn)); \
     CV_CPU_CALL_SSE2(accSqr_simd_, (src, dst, mask, len, cn)); \
+    CV_CPU_CALL_VSX(accSqr_simd_, (src, dst, mask, len, cn)); \
     CV_CPU_CALL_BASELINE(accSqr_general_, (src, dst, mask, len, cn)); \
 } \
 void accProd_##suffix(const type* src1, const type* src2, \
@@ -56,6 +62,7 @@ void accProd_##suffix(const type* src1, const type* src2, \
     CV_CPU_CALL_AVX(accProd_avx_##suffix, (src1, src2, dst, mask, len, cn)); \
     CV_CPU_CALL_NEON(accProd_simd_, (src1, src2, dst, mask, len, cn)); \
     CV_CPU_CALL_SSE2(accProd_simd_, (src1, src2, dst, mask, len, cn)); \
+    CV_CPU_CALL_VSX(accProd_simd_, (src1, src2, dst, mask, len, cn)); \
     CV_CPU_CALL_BASELINE(accProd_general_, (src1, src2, dst, mask, len, cn)); \
 } \
 void accW_##suffix(const type* src, acctype* dst, \
@@ -64,6 +71,7 @@ void accW_##suffix(const type* src, acctype* dst, \
     CV_CPU_CALL_AVX(accW_avx_##suffix, (src, dst, mask, len, cn, alpha)); \
     CV_CPU_CALL_NEON(accW_simd_, (src, dst, mask, len, cn, alpha)); \
     CV_CPU_CALL_SSE2(accW_simd_, (src, dst, mask, len, cn, alpha)); \
+    CV_CPU_CALL_VSX(accW_simd_, (src, dst, mask, len, cn, alpha)); \
     CV_CPU_CALL_BASELINE(accW_general_, (src, dst, mask, len, cn, alpha)); \
 }
 #define DECLARATE_ACC_FUNCS(suffix, type, acctype) \
@@ -307,6 +315,12 @@ accW_general_( const T* src, AT* dst, const uchar* mask, int len, int cn, double
 
 #if CV_SIMD128
 
+#if CV_VSX
+#pragma GCC push_options
+#pragma GCC target("cpu=power8")
+#pragma GCC target("tune=power8")
+#endif
+
 void acc_simd_(const uchar* src, float* dst, const uchar* mask, int len, int cn)
 {
     int x = 0;
@@ -399,6 +413,10 @@ void acc_simd_(const uchar* src, float* dst, const uchar* mask, int len, int cn)
 
     acc_general_(src, dst, mask, len, cn, x);
 }
+
+#if CV_VSX
+#pragma GCC pop_options
+#endif
 
 void acc_simd_(const ushort* src, float* dst, const uchar* mask, int len, int cn)
 {
@@ -1001,6 +1019,11 @@ void acc_simd_(const double* src, double* dst, const uchar* mask, int len, int c
 #endif
 
 // square accumulate optimized by universal intrinsic
+#if CV_VSX
+#pragma GCC push_options
+#pragma GCC target("cpu=power8")
+#pragma GCC target("tune=power8")
+#endif
 void accSqr_simd_(const uchar* src, float* dst, const uchar* mask, int len, int cn)
 {
     int x = 0;
@@ -1105,6 +1128,9 @@ void accSqr_simd_(const uchar* src, float* dst, const uchar* mask, int len, int 
 
     accSqr_general_(src, dst, mask, len, cn, x);
 }
+#if CV_VSX
+#pragma GCC pop_options
+#endif
 
 void accSqr_simd_(const ushort* src, float* dst, const uchar* mask, int len, int cn)
 {
@@ -1758,6 +1784,11 @@ void accSqr_simd_(const double* src, double* dst, const uchar* mask, int len, in
 #endif
 
 // product accumulate optimized by universal intrinsic
+#if CV_VSX
+#pragma GCC push_options
+#pragma GCC target("cpu=power8")
+#pragma GCC target("tune=power8")
+#endif
 void accProd_simd_(const uchar* src1, const uchar* src2, float* dst, const uchar* mask, int len, int cn)
 {
     int x = 0;
@@ -1889,6 +1920,9 @@ void accProd_simd_(const uchar* src1, const uchar* src2, float* dst, const uchar
 
     accProd_general_(src1, src2, dst, mask, len, cn, x);
 }
+#if CV_VSX
+#pragma GCC pop_options
+#endif
 
 void accProd_simd_(const ushort* src1, const ushort* src2, float* dst, const uchar* mask, int len, int cn)
 {

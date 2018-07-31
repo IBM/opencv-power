@@ -919,6 +919,26 @@ double cv::invert( InputArray _src, OutputArray _dst, int method )
                         _mm_storeh_pi((__m64*)((float*)(dstdata+dststep)), s0);
                     }
                     else
+                    #elif CV_VSX
+                    if(USE_VSX)
+                    {
+
+                        v_float32x4 t0 = v_load((const float*)srcdata); //s0 = sf(0,0) sf(0,1)
+                        v_float32x4 t1 = v_load ((const float*)(srcdata+srcstep));//s1 = sf(1,0) sf(1,1)
+                        static const vec_uchar16 permute_vector1 = {0x14, 0x15, 0x16, 0x17, 0x04, 0x05, 0x06, 0x07, 0x10, 0x11, 0x12, 0x13, 0x00, 0x01, 0x02, 0x03};
+                        v_float32x4 s0 = v_float32x4((vec_float4)vec_perm((vec_double2)t0.val, (vec_double2)t1.val, permute_vector1));
+                        v_float32x4 det = v_setall_f32((double)d);
+                        static const vec_uchar16 permute_vector2 = {0x00, 0x01, 0x02, 0x03, 0x00, 0x01, 0x02, 0x03, 0x00, 0x01, 0x02, 0x03, 0x00, 0x01, 0x02, 0x03};
+                        det = v_float32x4(vec_perm(det.val, det.val, permute_vector2));
+                        s0 = s0 * det;
+                        static const uchar CV_DECL_ALIGNED(16) inv[16] = {0,0,0,0,0,0,0,0x80,0,0,0,0x80,0,0,0,0};
+                        v_float32x4 pattern = v_load((float*)inv);
+                        s0 = s0 ^ pattern;
+
+                        vec_st_l8(s0.val, (float *)dstdata);
+                        vec_st_h8(s0.val, (float *)(dstdata+dststep));
+                    }
+                    else
                     #endif
                     {
                         double t0, t1;
@@ -960,6 +980,28 @@ double cv::invert( InputArray _src, OutputArray _dst, int method )
                         s1 = _mm_shuffle_pd(ss, sm, _MM_SHUFFLE2(0,1));
                         _mm_storeu_pd((double*)dstdata, s0);
                         _mm_storeu_pd((double*)(dstdata+dststep), s1);
+                    }
+                    else
+                    #elif CV_VSX
+                    if(USE_VSX)
+                    {
+                        v_float64x2 s0 = v_load((const double*)srcdata); //s0 = sf(0,0) sf(0,1)
+                        v_float64x2 s1 = v_load ((const double*)(srcdata+srcstep));//s1 = sf(1,0) sf(1,1)
+                        v_float64x2 sm = v_float64x2(vec_permi(s0.val, s1.val, 1)); //sm = sf(0,0) sf(1,1) - main diagonal
+                        v_float64x2 ss = v_float64x2(vec_permi(s0.val, s1.val, 2)); //ss = sf(0,1) sf(1,0) - secondary diagonal
+                        v_float64x2 det = v_setall_f64(d);
+                        sm =  sm * det;
+
+                        static const uchar CV_DECL_ALIGNED(16) inv[8] = {0,0,0,0,0,0,0,0x80};
+                        v_float64x2 pattern = v_load((double*)inv);
+                        pattern = v_float64x2(vec_permi(pattern.val, pattern.val, 0));
+                        ss = ss * det;
+                        ss = ss ^ pattern;//==-1*ss
+
+                        s0 = v_float64x2(vec_permi(sm.val, ss.val, 2));
+                        s1 = v_float64x2(vec_permi(ss.val, sm.val, 2));
+                        v_store((double*)dstdata, s0);
+                        v_store((double*)(dstdata+dststep), s1);
                     }
                     else
                     #endif

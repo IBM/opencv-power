@@ -40,6 +40,7 @@
 //M*/
 #include "precomp.hpp"
 #include "opencl_kernels_imgproc.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 namespace cv
 {
@@ -331,6 +332,67 @@ struct MomentsInTile_SIMD<uchar, int, int>
 
     uint CV_DECL_ALIGNED(16) buf[4];
     uint16x4_t qx_init, v_step;
+};
+
+#elif CV_VSX
+
+template <>
+struct MomentsInTile_SIMD<uchar, int, int>
+{
+    MomentsInTile_SIMD()
+    {
+        useSIMD = checkHardwareSupport(CV_CPU_VSX);
+    }
+
+    int operator() (const uchar * ptr, int len, int & x0, int & x1, int & x2, int & x3)
+    {
+        int x = 0;
+
+        if( useSIMD )
+        {
+            v_uint32x4 z32 = v_setzero_u32();
+            v_uint32x4 v_x0_l = z32, v_x1_l = z32, v_x2_l = z32, v_x3_l = z32;
+            v_uint32x4 v_x0_h = z32, v_x1_h = z32, v_x2_h = z32, v_x3_h = z32;
+            v_uint32x4 qx_l(0, 1, 2, 3);
+            v_uint32x4 qx_h(4, 5, 6, 7);
+            v_uint32x4 inc_8 = v_setall_u32(8);
+
+            for( ; x <= len - 8; x += 8 )
+            {
+                v_uint16x8 p = (v_uint16x8)vec_unpacklu(v_load_low(ptr + x).val);
+
+                v_uint32x4 p_l, p_h;
+                v_expand(p, p_l, p_h);
+                v_x0_l += p_l;
+                v_x0_h += p_h;
+                v_uint32x4 p_x_qx_l = p_l * qx_l;
+                v_uint32x4 p_x_qx_h = p_h * qx_h;
+                v_x1_l += p_x_qx_l;
+                v_x1_h += p_x_qx_h;
+                v_uint32x4 p_x_qx_x_qx_l = p_x_qx_l * qx_l;
+                v_uint32x4 p_x_qx_x_qx_h = p_x_qx_h * qx_h;
+                v_x2_l += p_x_qx_x_qx_l;
+                v_x2_h += p_x_qx_x_qx_h;
+                v_x3_l += p_x_qx_x_qx_l * qx_l;
+                v_x3_h += p_x_qx_x_qx_h * qx_h;
+                qx_l += inc_8;
+                qx_h += inc_8;
+            }
+
+            x0 = v_reduce_sum(v_x0_l);
+            x0 += v_reduce_sum(v_x0_h);
+            x1 = v_reduce_sum(v_x1_l);
+            x1 += v_reduce_sum(v_x1_h);
+            x2 = v_reduce_sum(v_x2_l);
+            x2 += v_reduce_sum(v_x2_h);
+            x3 = v_reduce_sum(v_x3_l);
+            x3 += v_reduce_sum(v_x3_h);
+        }
+        return x;
+    }
+
+    int CV_DECL_ALIGNED(16) buf[4];
+    bool useSIMD;
 };
 
 #endif

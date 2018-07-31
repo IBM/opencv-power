@@ -39,7 +39,7 @@
 // the use of this software, even if advised of the possibility of such damage.
 //
 //M*/
-
+#include "opencv2/core/hal/intrin.hpp"
 #include "precomp.hpp"
 #include "cascadedetect.hpp"
 #include "opencv2/core/core_c.h"
@@ -272,6 +272,24 @@ void HOGDescriptor::computeGradient(const Mat& img, Mat& grad, Mat& qangle,
             _mm_storeu_ps(_data + i, _mm_cvtepi32_ps(idx));
             idx = _mm_add_epi32(idx, ifour);
         }
+#elif CV_VSX
+    const int indeces[] = { 0, 1, 2, 3 };
+    v_int32x4 idx = v_load(indeces);
+    v_int32x4 ifour = v_setall_s32(4);
+
+    float* const _data = &_lut(0, 0);
+    if( gammaCorrection )
+        for( i = 0; i < 256; i += 4 )
+        {
+            v_store(_data + i, v_sqrt(v_cvt_f32(idx)));
+            idx = v_int32x4(vec_add(idx.val, ifour.val));
+        }
+    else
+        for( i = 0; i < 256; i += 4 )
+        {
+            v_store(_data + i, v_cvt_f32(idx));
+            idx = v_int32x4(vec_add(idx.val, ifour.val));
+        }
 #elif CV_NEON
     const int indeces[] = { 0, 1, 2, 3 };
     uint32x4_t idx = *(uint32x4_t*)indeces;
@@ -328,6 +346,13 @@ void HOGDescriptor::computeGradient(const Mat& img, Mat& grad, Mat& qangle,
             __m128i mul_res = _mm_loadu_si128((const __m128i*)(xmap + x));
             mul_res = _mm_add_epi32(_mm_add_epi32(mul_res, mul_res), mul_res); // multiply by 3
             _mm_storeu_si128((__m128i*)(xmap + x), mul_res);
+        }
+#elif CV_VSX
+        v_int32x4 ithree = v_setall_s32(3);
+        for ( ; x <= end - 4; x += 4)
+        {
+            v_int32x4 mul_res = v_load(xmap + x);
+            v_store(xmap + x, ithree * mul_res);
         }
 #elif CV_NEON
         int32x4_t ithree = vdupq_n_s32(3);
@@ -402,6 +427,45 @@ void HOGDescriptor::computeGradient(const Mat& img, Mat& grad, Mat& qangle,
                 _mm_storeu_ps(dbuf + x, _dx2);
                 _mm_storeu_ps(dbuf + x + width, _dy2);
             }
+#elif CV_VSX
+           for( ; x <= width - 4; x += 4 )
+           {
+               int x0 = xmap[x], x1 = xmap[x+1], x2 = xmap[x+2], x3 = xmap[x+3];
+               typedef const uchar* const T;
+               T p02 = imgPtr + xmap[x+1], p00 = imgPtr + xmap[x-1];
+               T p12 = imgPtr + xmap[x+2], p10 = imgPtr + xmap[x];
+               T p22 = imgPtr + xmap[x+3], p20 = p02;
+               T p32 = imgPtr + xmap[x+4], p30 = p12;
+
+               v_float32x4 _dx0 = v_float32x4(lut[p02[0]], lut[p12[0]], lut[p22[0]], lut[p32[0]]) -
+                                  v_float32x4(lut[p00[0]], lut[p10[0]], lut[p20[0]], lut[p30[0]]);
+               v_float32x4 _dx1 = v_float32x4(lut[p02[1]], lut[p12[1]], lut[p22[1]], lut[p32[1]]) -
+                                  v_float32x4(lut[p00[1]], lut[p10[1]], lut[p20[1]], lut[p30[1]]);
+               v_float32x4 _dx2 = v_float32x4(lut[p02[2]], lut[p12[2]], lut[p22[2]], lut[p32[2]]) -
+                                  v_float32x4(lut[p00[2]], lut[p10[2]], lut[p20[2]], lut[p30[2]]);
+
+               v_float32x4 _dy0 = v_float32x4(lut[nextPtr[x0]], lut[nextPtr[x1]], lut[nextPtr[x2]], lut[nextPtr[x3]]) -
+                                  v_float32x4(lut[prevPtr[x0]], lut[prevPtr[x1]], lut[prevPtr[x2]], lut[prevPtr[x3]]);
+               v_float32x4 _dy1 = v_float32x4(lut[nextPtr[x0+1]], lut[nextPtr[x1+1]], lut[nextPtr[x2+1]], lut[nextPtr[x3+1]]) -
+                                  v_float32x4(lut[prevPtr[x0+1]], lut[prevPtr[x1+1]], lut[prevPtr[x2+1]], lut[prevPtr[x3+1]]);
+               v_float32x4 _dy2 = v_float32x4(lut[nextPtr[x0+2]], lut[nextPtr[x1+2]], lut[nextPtr[x2+2]], lut[nextPtr[x3+2]]) -
+                                  v_float32x4(lut[prevPtr[x0+2]], lut[prevPtr[x1+2]], lut[prevPtr[x2+2]], lut[prevPtr[x3+2]]);
+
+               v_float32x4 _mag0 = (_dx0 * _dx0) + (_dy0 * _dy0);
+               v_float32x4 _mag1 = (_dx1 * _dx1) + (_dy1 * _dy1);
+               v_float32x4 _mag2 = (_dx2 * _dx2) + (_dy2 * _dy2);
+
+               v_float32x4 mask = vec_cmpgt(_mag2.val, _mag1.val);
+               _dx2 = v_float32x4(vec_or(vec_and(_dx2.val, mask.val), vec_andc(_dx1.val, mask.val)));
+               _dy2 = v_float32x4(vec_or(vec_and(_dy2.val, mask.val), vec_andc(_dy1.val, mask.val)));
+
+               mask = vec_cmpgt(vec_max(_mag2.val, _mag1.val), _mag0.val);
+               _dx2 = v_float32x4(vec_or(vec_and(_dx2.val, mask.val), vec_andc(_dx0.val, mask.val)));
+               _dy2 = v_float32x4(vec_or(vec_and(_dy2.val, mask.val), vec_andc(_dy0.val, mask.val)));
+
+               v_store(dbuf + x, _dx2);
+               v_store(dbuf + x + width, _dy2);
+           }
 #elif CV_NEON
             for( ; x <= width - 4; x += 4 )
             {
@@ -521,6 +585,43 @@ void HOGDescriptor::computeGradient(const Mat& img, Mat& grad, Mat& qangle,
             it0 = _mm_unpacklo_epi8(it0, it1);
 
             _mm_storel_epi64((__m128i*)(qanglePtr + x2), it0);
+        }
+#elif CV_VSX
+        v_float32x4 fhalf = v_setall_f32(0.5f);
+        v_float32x4 _angleScale = v_setall_f32(angleScale), fone = v_setall_f32(1.0f);
+        v_int32x4 ione = v_setall_s32(1), _nbins = v_setall_s32(nbins), izero = v_setall_s32(0);
+
+        for ( ; x <= width - 4; x += 4)
+        {
+            int x2 = x << 1;
+            v_float32x4 _mag = v_load(dbuf + x + (width << 1));
+            v_float32x4 _angle = v_load(dbuf + x + width * 3);
+            _angle = (_angleScale * _angle) - fhalf;
+
+            v_int32x4 _hidx = v_floor(_angle);
+            _angle = _angle - v_cvt_f32(_hidx);
+
+            v_float32x4 ft0 = _mag * (fone - _angle);
+            v_float32x4 ft1 = _mag * _angle;
+            v_float32x4 ft2 = v_float32x4(vec_mergeh(ft0.val, ft1.val));
+            v_float32x4 ft3 = v_float32x4(vec_mergel(ft0.val, ft1.val));
+
+            v_store(gradPtr + x2, ft2);
+            v_store(gradPtr + x2 + 4, ft3);
+
+            v_int32x4 mask0 = izero - v_reinterpret_as_s32((v_reinterpret_as_u32(_hidx)>>31));
+            v_int32x4 it0 = v_int32x4(vec_and(mask0.val, _nbins.val));
+            mask0 = v_int32x4(vec_cmplt(_hidx.val, _nbins.val));
+            v_int32x4 it1 = (~mask0) & _nbins;
+            _hidx = _hidx + (it0 - it1);
+
+            v_uint8x16 v_it0 = v_pack(v_pack_u(_hidx, izero), v_reinterpret_as_u16(izero));;
+            _hidx = ione + _hidx;
+            _hidx = v_int32x4(vec_and(_hidx.val, vec_cmplt(_hidx.val, _nbins.val)));
+            v_uint8x16 v_it1 = v_pack(v_pack_u(_hidx, izero), v_reinterpret_as_u16(izero));;
+            v_uint8x16 v_it = v_uint8x16(vec_mergeh(v_it0.val, v_it1.val));
+
+            v_store_low((int64 *)(qanglePtr + x2), v_reinterpret_as_s64(v_it));
         }
 #endif
         for( ; x < width; x++ )
@@ -673,6 +774,19 @@ void HOGCache::init(const HOGDescriptor* _descriptor,
             idx = _mm_add_epi32(idx, ifour);
             _mm_storeu_ps(_di + i, t);
         }
+   #elif CV_VSX
+        const int a[] = { 0, 1, 2, 3 };
+        v_int32x4 idx = v_load(a);
+        v_float32x4 _bw = v_setall_f32(bw), _bh = v_setall_f32(bh);
+        v_int32x4 ifour = v_setall_s32(4);
+
+        for (; i <= blockSize.height - 4; i += 4)
+        {
+            v_float32x4 t = v_cvt_f32(idx) - _bh;
+            t = t * t;
+            idx = idx + ifour;
+            v_store(_di + i, t);
+        }
     #elif CV_NEON
         const int a[] = { 0, 1, 2, 3 };
         int32x4_t idx = vld1q_s32(a);
@@ -702,6 +816,15 @@ void HOGCache::init(const HOGDescriptor* _descriptor,
             t = _mm_mul_ps(t, t);
             idx = _mm_add_epi32(idx, ifour);
             _mm_storeu_ps(_dj + j, t);
+        }
+    #elif CV_VSX
+        idx = v_load(a);
+        for (; j <= blockSize.width - 4; j += 4)
+        {
+            v_float32x4 t = v_cvt_f32(idx) - _bw;
+            t = t * t;
+            idx = idx + ifour;
+            v_store(_dj + j, t);
         }
     #elif CV_NEON
         idx = vld1q_s32(a);
@@ -934,6 +1057,32 @@ const float* HOGCache::getBlock(Point pt, float* buf)
         t1 = hist[h1] + hist1[1];
         hist[h0] = t0; hist[h1] = t1;
     }
+#elif CV_VSX
+    float hist0[4], hist1[4];
+    for( ; k < C2; k++ )
+    {
+        const PixData& pk = _pixData[k];
+        const float* const a = gradPtr + pk.gradOfs;
+        const uchar* const h = qanglePtr + pk.qangleOfs;
+        int h0 = h[0], h1 = h[1];
+
+        v_float32x4 _a0 = v_setall_f32(a[0]), _a1 = v_setall_f32(a[1]);
+        v_float32x4 _w = v_setall_f32(pk.gradWeight) * v_load(pk.histWeights);
+        v_float32x4 _t0 = _a0 * _w, _t1 = _a1 * _w;
+
+        v_store(hist0, _t0);
+        v_store(hist1, _t1);
+
+        float* hist = blockHist + pk.histOfs[0];
+        float t0 = hist[h0] + hist0[0];
+        float t1 = hist[h1] + hist1[0];
+        hist[h0] = t0; hist[h1] = t1;
+
+        hist = blockHist + pk.histOfs[1];
+        t0 = hist[h0] + hist0[1];
+        t1 = hist[h1] + hist1[1];
+        hist[h0] = t0; hist[h1] = t1;
+    }
 #elif CV_NEON
     float hist0[4], hist1[4];
     for( ; k < C2; k++ )
@@ -1038,6 +1187,41 @@ const float* HOGCache::getBlock(Point pt, float* buf)
 //        (pk.histOfs[2] + blockHist)[h1] = hist1[2];
 //        (pk.histOfs[3] + blockHist)[h1] = hist1[3];
     }
+#elif CV_VSX
+    for( ; k < C4; k++ )
+    {
+        const PixData& pk = _pixData[k];
+        const float* const a = gradPtr + pk.gradOfs;
+        const uchar* const h = qanglePtr + pk.qangleOfs;
+        int h0 = h[0], h1 = h[1];
+
+        v_float32x4 _a0 = v_setall_f32(a[0]), _a1 = v_setall_f32(a[1]);
+        v_float32x4 _w = v_setall_f32(pk.gradWeight) * v_load(pk.histWeights);
+        v_float32x4 _t0 = _a0 * _w, _t1 = _a1 * _w;
+
+        v_store(hist0, _t0);
+        v_store(hist1, _t1);
+
+        float* hist = blockHist + pk.histOfs[0];
+        float t0 = hist[h0] + hist0[0];
+        float t1 = hist[h1] + hist1[0];
+        hist[h0] = t0; hist[h1] = t1;
+
+        hist = blockHist + pk.histOfs[1];
+        t0 = hist[h0] + hist0[1];
+        t1 = hist[h1] + hist1[1];
+        hist[h0] = t0; hist[h1] = t1;
+
+        hist = blockHist + pk.histOfs[2];
+        t0 = hist[h0] + hist0[2];
+        t1 = hist[h1] + hist1[2];
+        hist[h0] = t0; hist[h1] = t1;
+
+        hist = blockHist + pk.histOfs[3];
+        t0 = hist[h0] + hist0[3];
+        t1 = hist[h1] + hist1[3];
+        hist[h0] = t0; hist[h1] = t1;
+    }
 #elif CV_NEON
     for( ; k < C4; k++ )
     {
@@ -1128,6 +1312,16 @@ void HOGCache::normalizeBlockHistogram(float* _hist) const
         s = _mm_add_ps(s, _mm_mul_ps(p0, p0));
     }
     _mm_storeu_ps(partSum, s);
+#elif CV_VSX
+    v_float32x4 p0 = v_load(hist);
+    v_float32x4 s = p0 * p0;
+
+    for (i = 4; i <= sz - 4; i += 4)
+    {
+        p0 = v_load(hist + i);
+        s = s + (p0 * p0);
+    }
+    v_store(partSum, s);
 #elif CV_NEON
     float32x4_t p0 = vld1q_f32(hist);
     float32x4_t s = vmulq_f32(p0, p0);
@@ -1179,6 +1373,25 @@ void HOGCache::normalizeBlockHistogram(float* _hist) const
     }
 
     _mm_storeu_ps(partSum, s);
+#elif CV_VSX
+    v_float32x4 _scale = v_setall_f32(scale);
+    static v_float32x4 _threshold = v_setall_f32(thresh);
+
+    v_float32x4 p = _scale * v_load(hist);
+    p = v_min(p,  _threshold);
+    s = p * p;
+    v_store(hist, p);
+
+    for(i = 4 ; i <= sz - 4; i += 4)
+    {
+        p = v_load(hist + i);
+        p = p * _scale;
+        p = v_min(p, _threshold);
+        s = s + (p * p);
+        v_store(hist + i, p);
+    }
+
+    v_store(partSum, s);
 #elif CV_NEON
     float32x4_t _scale = vdupq_n_f32(scale);
     static float32x4_t _threshold = vdupq_n_f32(thresh);
@@ -1231,6 +1444,13 @@ void HOGCache::normalizeBlockHistogram(float* _hist) const
     {
         __m128 t = _mm_mul_ps(_scale2, _mm_loadu_ps(hist + i));
         _mm_storeu_ps(hist + i, t);
+    }
+#elif CV_VSX
+    v_float32x4 _scale2 = v_setall_f32(scale);
+    for ( ; i <= sz - 4; i += 4)
+    {
+        v_float32x4 t = _scale2 * v_load(hist + i);
+        v_store(hist + i, t);
     }
 #elif CV_NEON
     float32x4_t _scale2 = vdupq_n_f32(scale);
@@ -1684,7 +1904,7 @@ void HOGDescriptor::detect(const Mat& img,
     double rho = svmDetector.size() > dsize ? svmDetector[dsize] : 0;
     std::vector<float> blockHist(blockHistogramSize);
 
-#if CV_SSE2 || CV_NEON
+#if CV_SSE2 || CV_VSX || CV_NEON
     float partSum[4];
 #endif
 
@@ -1727,6 +1947,23 @@ void HOGDescriptor::detect(const Mat& img,
             }
 
             _mm_storeu_ps(partSum, sum);
+            double t0 = partSum[0] + partSum[1];
+            double t1 = partSum[2] + partSum[3];
+            s += t0 + t1;
+#elif CV_VSX
+            v_float32x4 _vec = v_load(vec);
+            v_float32x4 _svmVec = v_load(svmVec);
+            v_float32x4 sum = _svmVec * _vec;
+
+            for( k = 4; k <= blockHistogramSize - 4; k += 4 )
+            {
+                _vec = v_load(vec + k);
+                _svmVec = v_load(svmVec + k);
+
+                sum = sum + (_vec * _svmVec);
+            }
+
+            v_store(partSum, sum);
             double t0 = partSum[0] + partSum[1];
             double t1 = partSum[2] + partSum[3];
             s += t0 + t1;
@@ -3579,7 +3816,7 @@ void HOGDescriptor::detectROI(const cv::Mat& img, const std::vector<cv::Point> &
     double rho = svmDetector.size() > dsize ? svmDetector[dsize] : 0;
     std::vector<float> blockHist(blockHistogramSize);
 
-#if CV_SSE2 || CV_NEON
+#if CV_SSE2 || CV_VSX || CV_NEON
     float partSum[4];
 #endif
 
@@ -3620,6 +3857,23 @@ void HOGDescriptor::detectROI(const cv::Mat& img, const std::vector<cv::Point> &
             }
 
             _mm_storeu_ps(partSum, sum);
+            double t0 = partSum[0] + partSum[1];
+            double t1 = partSum[2] + partSum[3];
+            s += t0 + t1;
+#elif CV_VSX
+            v_float32x4 _vec = v_load(vec);
+            v_float32x4 _svmVec = v_load(svmVec);
+            v_float32x4 sum = _svmVec * _vec;
+
+            for( k = 4; k <= blockHistogramSize - 4; k += 4 )
+            {
+                _vec = v_load(vec + k);
+                _svmVec = v_load(svmVec + k);
+
+                sum = sum + (_vec * _svmVec);
+            }
+
+            v_store(partSum, sum);
             double t0 = partSum[0] + partSum[1];
             double t1 = partSum[2] + partSum[3];
             s += t0 + t1;

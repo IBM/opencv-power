@@ -95,6 +95,8 @@ public:
         s4(_s4) {
 #if CV_TRY_AVX2
         useAVX2 = cv::checkHardwareSupport(CV_CPU_AVX2);
+#elif CV_VSX
+        useVSX = cv::checkHardwareSupport(CV_CPU_VSX);
 #endif
     }
 
@@ -123,6 +125,11 @@ public:
     #if CV_TRY_AVX2
             if( useAVX2 )
                 j = cv::initUndistortRectifyMapLine_AVX(m1f, m2f, m1, m2,
+                                                        matTilt.val, ir, _x, _y, _w, size.width, m1type,
+                                                        k1, k2, k3, k4, k5, k6, p1, p2, s1, s2, s3, s4, u0, v0, fx, fy);
+    #elif CV_VSX
+            if( useVSX )
+                j = cv::initUndistortRectifyMapLine_VSX(m1f, m2f, m1, m2, 
                                                         matTilt.val, ir, _x, _y, _w, size.width, m1type,
                                                         k1, k2, k3, k4, k5, k6, p1, p2, s1, s2, s3, s4, u0, v0, fx, fy);
     #endif
@@ -185,6 +192,8 @@ private:
     double s4;
 #if CV_TRY_AVX2
     bool useAVX2;
+#elif CV_VSX
+    bool useVSX;
 #endif
 };
 

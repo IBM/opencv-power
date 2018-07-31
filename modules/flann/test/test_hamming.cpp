@@ -7,11 +7,10 @@
 //  copy or use the software.
 //
 //
-//                           License Agreement
+//                        Intel License Agreement
 //                For Open Source Computer Vision Library
 //
-// Copyright (C) 2000-2008, Intel Corporation, all rights reserved.
-// Copyright (C) 2009, Willow Garage Inc., all rights reserved.
+// Copyright (C) 2000, Intel Corporation, all rights reserved.
 // Third party copyrights are property of their respective owners.
 //
 // Redistribution and use in source and binary forms, with or without modification,
@@ -24,7 +23,7 @@
 //     this list of conditions and the following disclaimer in the documentation
 //     and/or other materials provided with the distribution.
 //
-//   * The name of the copyright holders may not be used to endorse or promote products
+//   * The name of Intel Corporation may not be used to endorse or promote products
 //     derived from this software without specific prior written permission.
 //
 // This software is provided by the copyright holders and contributors "as is" and
@@ -40,26 +39,38 @@
 //
 //M*/
 
-#ifndef OPENCV_IMGPROC_UNDISTORT_HPP
-#define OPENCV_IMGPROC_UNDISTORT_HPP
+#include "test_precomp.hpp"
 
-namespace cv
-{
-#if CV_TRY_AVX2
-    int initUndistortRectifyMapLine_AVX(float* m1f, float* m2f, short* m1, ushort* m2, double* matTilt, const double* ir,
-        double& _x, double& _y, double& _w, int width, int m1type,
-        double k1, double k2, double k3, double k4, double k5, double k6,
-        double p1, double p2, double s1, double s2, double s3, double s4,
-        double u0, double v0, double fx, double fy);
-#elif CV_VSX
-    int initUndistortRectifyMapLine_VSX(float* m1f, float* m2f, short* m1, ushort* m2, double* matTilt, const double* ir,
-        double& _x, double& _y, double& _w, int width, int m1type,
-        double k1, double k2, double k3, double k4, double k5, double k6,
-        double p1, double p2, double s1, double s2, double s3, double s4,
-        double u0, double v0, double fx, double fy);
-#endif
+using namespace cv;
+
+#define HAMMING_SIZE (1024 + 13)
+TEST(HammingTest, hamming_distance) {
+        int dist = 0;
+        int src1[HAMMING_SIZE], src2[HAMMING_SIZE];
+
+        for (int i = 0; i < HAMMING_SIZE; i++) {
+                src1[i] = rand();
+                src2[i] = src1[i];
+        }
+        cvflann::Hamming<uchar> myHamm;
+        dist = myHamm((uchar*)src1, (uchar*)src2, HAMMING_SIZE * sizeof(int));
+
+        /* we expect no HammingDistance */
+        EXPECT_EQ(0, dist);
+
+        /* now randomly change dist */
+        int expected_dist = 0;
+        for (int i = 0; i < HAMMING_SIZE; i++) {
+                int no_change = rand() % 3; /* change 1/3 */
+                int flip_bit = rand() % sizeof(int);
+                int flip_mask = (1 << flip_bit);
+                int flip_or_val = 0;
+                if (!no_change) {
+                        flip_or_val = (!!!(src2[i] & flip_mask)) << flip_bit;
+                        src2[i] = (src2[i] & ~flip_mask) | flip_or_val;
+                        expected_dist++;
+                }
+        }
+        dist = myHamm((uchar*)src1, (uchar*)src2, HAMMING_SIZE * sizeof(int));
+        EXPECT_EQ(expected_dist, dist);
 }
-
-#endif
-
-/*  End of file  */

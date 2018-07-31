@@ -43,7 +43,7 @@
 
 #include "precomp.hpp"
 #include "opencl_kernels_imgproc.hpp"
-
+#include "opencv2/core/hal/intrin.hpp"
 #include "opencv2/core/openvx/ovx_defs.hpp"
 
 namespace cv
@@ -73,7 +73,393 @@ template<typename T1, typename T2> struct PyrUpNoVec
     int operator()(T1**, T2**, int, int) const { return 0; }
 };
 
-#if CV_SSE2
+/**********the VSX PART FOR IBM POWER*********************/
+#if CV_VSX
+
+struct PyrDownVec_32s8u
+{
+        int operator()(int** src, uchar* dst, int, int width) const
+        {
+            if( !checkHardwareSupport(CV_CPU_VSX)) return 0;
+
+            int x = 0;
+            const unsigned int *row0 = (unsigned int*)src[0], *row1 = (unsigned int*)src[1],
+                           *row2 = (unsigned int*)src[2], *row3 = (unsigned int*)src[3],
+                           *row4 = (unsigned int*)src[4];
+            v_uint16x8 v_delta = v_setall_u16(128);
+
+           for( ; x <= width - 16; x += 16 )
+           {
+               v_uint16x8 v_r0 = v_pack(v_load(row0 + x), v_load(row0 + x + 4));
+               v_uint16x8 v_r1 = v_pack(v_load(row1 + x), v_load(row1 + x + 4));
+               v_uint16x8 v_r2 = v_pack(v_load(row2 + x), v_load(row2 + x + 4));
+               v_uint16x8 v_r3 = v_pack(v_load(row3 + x), v_load(row3 + x + 4));
+               v_uint16x8 v_r4 = v_pack(v_load(row4 + x), v_load(row4 + x + 4));
+
+               v_r0 = v_r0 + v_r4 + v_r2 + v_r2;
+               v_r1 = v_r1 + v_r2 + v_r3;
+               v_uint16x8 v_dst0 = v_r0 + v_shl<2>(v_r1);
+
+               v_r0 = v_pack(v_load(row0 + x + 8), v_load(row0 + x + 12));
+               v_r1 = v_pack(v_load(row1 + x + 8), v_load(row1 + x + 12));
+               v_r2 = v_pack(v_load(row2 + x + 8), v_load(row2 + x + 12));
+               v_r3 = v_pack(v_load(row3 + x + 8), v_load(row3 + x + 12));
+               v_r4 = v_pack(v_load(row4 + x + 8), v_load(row4 + x + 12));
+
+               v_r0 = v_r0 + v_r4 + v_r2 + v_r2;
+               v_r1 = v_r1 + v_r2 + v_r3;
+               v_uint16x8 v_dst1 = v_r0 + v_shl<2>(v_r1);
+
+               v_store(dst + x, v_pack(v_shr<8>(v_dst0 + v_delta),
+                                      v_shr<8>(v_dst1 + v_delta)));
+           }
+
+           return x;
+        }
+};
+
+struct PyrDownVec_32f
+{
+         int operator()(float** src, float* dst, int , int width ) const
+         {
+             if( !checkHardwareSupport(CV_CPU_VSX) )
+                return 0;
+             int x = 0;
+             const float *row0 = src[0], *row1 = src[1], *row2 = src[2], *row3 = src[3], *row4 = src[4];
+             v_float32x4 _4 = v_setall_f32(4.f), _scale = v_setall_f32(1.f/256);
+             for(; x <= width - 8; x += 8)
+             {
+                     v_float32x4 r0, r1, r2, r3, r4, t0, t1;
+                     r0 = v_load(row0+x);
+                     r1 = v_load(row1+x);
+                     r2 = v_load(row2+x);
+                     r3 = v_load(row3+x);
+                     r4 = v_load(row4+x);
+
+                     r0 = r0 + r4;
+                     r1 = r1 + r3 + r2;
+                     r0 = r0 + r2 + r2;
+                     t0 = r0 + r1 * _4;
+
+                     r0 = v_load(row0+x+4);
+                     r1 = v_load(row1+x+4);
+                     r2 = v_load(row2+x+4);
+                     r3 = v_load(row3+x+4);
+                     r4 = v_load(row4+x+4);
+
+                     r0 = r0 + r4;
+                     r1 = r1 + r3 + r2;
+                     r0 = r0 + (r2 + r2);
+                     t1 = r0 + r1 * _4;
+
+                     t0 = t0 * _scale;
+                     t1 = t1 * _scale;
+                     v_store(dst + x, t0);
+                     v_store(dst + x + 4, t1);
+             }
+             return x;
+         }
+};
+
+struct PyrDownVec_32s16u
+{
+    PyrDownVec_32s16u()
+    {
+        haveVSX = checkHardwareSupport(CV_CPU_VSX);
+    }
+
+    int operator()(int** src, ushort* dst, int, int width) const
+    {
+        int x = 0;
+
+        if (!haveVSX)
+            return x;
+
+        const int *row0 = src[0], *row1 = src[1], *row2 = src[2], *row3 = src[3], *row4 = src[4];
+        v_int32x4 v_delta = v_setall_s32(128);
+        for( ; x <= width - 8; x += 8 )
+        {
+            v_int32x4 v_r00 = v_load(row0 + x),
+                      v_r01 = v_load(row0 + x + 4);
+            v_int32x4 v_r10 = v_load(row1 + x),
+                      v_r11 = v_load(row1 + x + 4);
+            v_int32x4 v_r20 = v_load(row2 + x),
+                      v_r21 = v_load(row2 + x + 4);
+            v_int32x4 v_r30 = v_load(row3 + x),
+                      v_r31 = v_load(row3 + x + 4);
+            v_int32x4 v_r40 = v_load(row4 + x),
+                      v_r41 = v_load(row4 + x + 4);
+
+            v_r00 = (v_r00 + v_r40) + (v_r20 + v_r20);
+            v_r10 = (v_r10 + v_r20 + v_r30);
+
+            v_r10 = v_shl<2>(v_r10);
+            v_int32x4 v_dst0 = (v_r00+v_r10+v_delta) >> 8;
+            v_r01 =  (v_r01 + v_r41) + (v_r21 + v_r21);
+            v_r11 = (v_r11 + v_r21) + v_r31;
+            v_r11 = v_shl<2>(v_r11);
+            v_int32x4 v_dst1 = v_shr<8>(v_r01+v_r11+v_delta);
+            v_store((dst + x), v_pack_u(v_dst0, v_dst1));
+        }
+
+        return x;
+    }
+
+    bool haveVSX;
+
+};
+
+struct PyrDownVec_32s16s
+{
+    PyrDownVec_32s16s()
+    {
+        haveVSX = checkHardwareSupport(CV_CPU_VSX);
+    }
+
+    int operator()(int** src, short* dst, int, int width) const
+    {
+        int x = 0;
+
+        if (!haveVSX)
+            return x;
+        const int *row0 = src[0], *row1 = src[1], *row2 = src[2], *row3 = src[3], *row4 = src[4];
+        v_int32x4 v_delta = v_setall_s32(128);
+        for( ; x <= width - 8; x += 8 )
+        {
+            v_int32x4 v_r00 = v_load(row0 + x),
+                      v_r01 = v_load(row0 + x + 4);
+            v_int32x4 v_r10 = v_load(row1 + x),
+                      v_r11 = v_load(row1 + x + 4);
+            v_int32x4 v_r20 = v_load(row2 + x),
+                      v_r21 = v_load(row2 + x + 4);
+            v_int32x4 v_r30 = v_load(row3 + x),
+                      v_r31 = v_load(row3 + x + 4);
+            v_int32x4 v_r40 = v_load(row4 + x),
+                      v_r41 = v_load(row4 + x + 4);
+
+            v_r00 = (v_r00 + v_r40)+ (v_r20 + v_r20);
+            v_r10 = v_r10 + v_r20 + v_r30;
+
+            v_r10 = v_shl<2>(v_r10);
+            v_int32x4 v_dst0 = (v_r00 + v_r10 + v_delta) >> 8;
+
+            v_r01 = (v_r01 + v_r41) + (v_r21 + v_r21);
+            v_r11 = (v_r11 + v_r21) + v_r31;
+            v_r11 = v_shl<2>(v_r11);
+            v_int32x4 v_dst1 = (v_r01 + v_r11 + v_delta) >> 8;
+
+            v_store((dst + x), v_pack(v_dst0, v_dst1));
+        }
+
+        return x;
+    }
+
+    bool haveVSX;
+};
+
+struct PyrUpVec_32s8u
+{
+    int operator()(int** src, uchar** dst, int, int width) const
+    {
+        int x = 0;
+
+        if (!checkHardwareSupport(CV_CPU_VSX))
+            return x;
+
+        uchar *dst0 = dst[0], *dst1 = dst[1];
+        const uint *row0 = (uint *)src[0], *row1 = (uint *)src[1], *row2 = (uint *)src[2];
+        v_uint16x8 v_delta = v_setall_u16(32), v_zero = v_setall_u16(0);
+
+        for( ; x <= width - 16; x += 16 )
+        {
+            v_uint16x8 v_r0 = v_pack(v_load(row0 + x), v_load(row0 + x + 4) );
+            v_uint16x8 v_r1 = v_pack(v_load(row1 + x), v_load(row1 + x + 4) );
+            v_uint16x8 v_r2 = v_pack(v_load(row2 + x), v_load(row2 + x + 4) );
+
+            v_uint16x8 v_2r1 = (v_uint16x8)vec_adds(v_r1.val, v_r1.val),
+                       v_4r1 = (v_uint16x8)vec_adds(v_2r1.val, v_2r1.val);
+            v_uint16x8 v_dst00 = (v_uint16x8)vec_adds(vec_adds(v_r0.val, v_r2.val),
+                                                      vec_adds(v_2r1.val, v_4r1.val));
+            v_uint16x8 v_dst10 = v_shl<2>((v_uint16x8)vec_adds(v_r1.val, v_r2.val));
+
+            v_r0 = v_pack(v_load(row0 + x + 8),v_load(row0 + x + 12));
+            v_r1 = v_pack(v_load(row1 + x + 8),v_load(row1 + x + 12));
+            v_r2 = v_pack(v_load(row2 + x + 8),v_load(row2 + x + 12));
+
+            v_2r1 = (v_uint16x8)vec_adds(v_r1.val, v_r1.val);
+            v_4r1 = (v_uint16x8)vec_adds(v_2r1.val, v_2r1.val);
+            v_uint16x8 v_dst01 = (v_uint16x8)vec_adds(vec_adds(v_r0.val, v_r2.val),
+                                                      vec_adds(v_2r1.val, v_4r1.val));
+            v_uint16x8 v_dst11 = v_shl<2>((v_uint16x8)vec_adds(v_r1.val, v_r2.val));
+
+            v_store((dst0 + x),
+                        v_pack( v_shr<6>((v_uint16x8)vec_adds(v_dst00.val, v_delta.val)),
+                                v_shr<6>((v_uint16x8)vec_adds(v_dst01.val, v_delta.val))));
+            v_store((dst1 + x),
+                        v_pack( v_shr<6>((v_uint16x8)vec_adds(v_dst10.val, v_delta.val)),
+                                v_shr<6>((v_uint16x8)vec_adds(v_dst11.val, v_delta.val))));
+        }
+
+        for( ; x <= width - 8; x += 8 )
+        {
+            v_uint16x8 v_r0 = v_pack( v_load(row0 + x), v_load(row0 + x + 4) );
+            v_uint16x8 v_r1 = v_pack( v_load(row1 + x), v_load(row1 + x + 4) );
+            v_uint16x8 v_r2 = v_pack( v_load(row2 + x), v_load(row2 + x + 4) );
+
+            v_uint16x8 v_2r1 = (v_uint16x8)vec_adds(v_r1.val, v_r1.val),
+                       v_4r1 = (v_uint16x8)vec_adds(v_2r1.val, v_2r1.val);
+            v_uint16x8 v_dst0 =(v_uint16x8)vec_adds(vec_adds(v_r0.val, v_r2.val),
+                                                    vec_adds(v_2r1.val, v_4r1.val));
+            v_uint16x8 v_dst1 = v_shl<2>((v_uint16x8)vec_adds(v_r1.val, v_r2.val));
+
+            v_store_low( (dst0 + x), v_pack(v_shr<6>(v_dst0 + v_delta), v_zero));
+            v_store_low( (dst1 + x), v_pack(v_shr<6>(v_dst1 + v_delta), v_zero));
+        }
+
+        return x;
+    }
+
+};
+
+struct PyrUpVec_32s16u
+{
+    int operator()(int** src, ushort** dst, int, int width) const
+    {
+        int x = 0;
+
+        if (!checkHardwareSupport(CV_CPU_VSX))
+            return x;
+
+        ushort *dst0 = dst[0], *dst1 = dst[1];
+        const uint *row0 = (uint *)src[0], *row1 = (uint *)src[1], *row2 = (uint *)src[2];
+        v_uint32x4 v_delta = v_setall_u32(32), v_zero = v_setall_u32(0);
+
+        for( ; x <= width - 8; x += 8 )
+        {
+            v_uint32x4 v_r0 = v_load(row0 + x),
+                       v_r1 = v_load(row1 + x),
+                       v_r2 = v_load(row2 + x);
+            v_uint32x4 v_2r1 = v_shl<1>(v_r1), v_4r1 = v_shl<2>(v_r1);
+            v_uint32x4 v_dst00 = (v_r0 + v_r2) + (v_2r1 + v_4r1);
+            v_uint32x4 v_dst10 = v_shl<2>(v_r1 + v_r2);
+
+            v_r0 = v_load(row0 + x + 4);
+            v_r1 = v_load(row1 + x + 4);
+            v_r2 = v_load(row2 + x + 4);
+            v_2r1 = v_shl<1>(v_r1);
+            v_4r1 = v_shl<2>(v_r1);
+            v_uint32x4 v_dst01 = (v_r0 + v_r2) + (v_2r1 + v_4r1);
+            v_uint32x4 v_dst11 = v_shl<2>(v_r1 + v_r2);
+
+            v_store( (dst0 + x),
+                    v_pack(v_shr<6>(v_dst00 + v_delta), v_shr<6>(v_dst01 + v_delta)));
+            v_store( (dst1 + x),
+                    v_pack(v_shr<6>(v_dst10 + v_delta), v_shr<6>(v_dst11 + v_delta)));
+        }
+
+        for( ; x <= width - 4; x += 4 )
+        {
+            v_uint32x4 v_r0 = v_load(row0 + x),
+                    v_r1 = v_load(row1 + x),
+                    v_r2 = v_load(row2 + x);
+            v_uint32x4 v_2r1 = v_shl<1>(v_r1), v_4r1 = v_shl<2>(v_r1);
+
+            v_uint32x4 v_dst0 = (v_r0 + v_r2) + (v_2r1 + v_4r1);
+            v_uint32x4 v_dst1 = v_shl<2>(v_r1 + v_r2);
+
+            vec_st_l8( v_pack(v_shr<6>(v_dst0 + v_delta), v_zero).val, (dst0 + x));
+            vec_st_l8( v_pack(v_shr<6>(v_dst1 + v_delta), v_zero).val, (dst1 + x));
+        }
+        return x;
+    }
+};
+
+struct PyrUpVec_32s16s{
+           int operator()(int** src, short** dst, int, int width) const
+            {
+                int x = 0;
+
+                if (!checkHardwareSupport(CV_CPU_VSX))
+                    return x;
+
+                short *dst0 = dst[0], *dst1 = dst[1];
+                const int *row0 = src[0], *row1 = src[1], *row2 = src[2];
+                v_int32x4 v_delta = v_setall_s32(32), v_zero = v_setall_s32(0);
+                for( ; x <= width - 8; x += 8 )
+                {
+                    v_int32x4 v_r0 = v_load(row0 + x),
+                              v_r1 = v_load(row1 + x),
+                              v_r2 = v_load(row2 + x);
+                    v_int32x4 v_2r1 = v_shl<1>(v_r1), v_4r1 = v_shl<2>(v_r1);
+                    v_int32x4 v_dst00 = (v_r0 + v_r2) + (v_2r1 + v_4r1);
+                    v_int32x4 v_dst10 = v_shl<2>((v_r1 + v_r2));
+
+                    v_r0 = v_load(row0 + x + 4);
+                    v_r1 = v_load(row1 + x + 4);
+                    v_r2 = v_load(row2 + x + 4);
+                    v_2r1 = v_r1<<1;
+                    v_4r1 = v_r1<<2;
+                    v_int32x4 v_dst01 = (v_r0 + v_r2)+ (v_2r1 + v_4r1);
+                    v_int32x4 v_dst11 = (v_r1 + v_r2)<<2;
+
+                    v_store(dst0 + x, v_pack((v_dst00 + v_delta) >> 6, (v_dst01 + v_delta) >>6 ));
+                    v_store(dst1 + x, v_pack((v_dst10 + v_delta) >> 6, (v_dst11 + v_delta) >>6 ));
+                }
+
+                for( ; x <= width - 4; x += 4 )
+                {
+                      v_int32x4 v_r0 = v_load(row0 + x),
+                      v_r1 = v_load(row1 + x),
+                      v_r2 = v_load(row2 + x);
+                      v_int32x4 v_2r1 = v_r1 << 1,
+                                v_4r1 = v_r1 << 2;
+
+                      v_int32x4 v_dst0 = (v_r0 + v_r2) + (v_2r1 + v_4r1);
+                      v_int32x4 v_dst1 = (v_r1 + v_r2) << 2;
+
+                      v_store_low((dst0 + x), v_pack(((v_dst0+v_delta) >> 6 ), v_zero));
+                      v_store_low((dst1 + x), v_pack(((v_dst1+v_delta) >> 6 ), v_zero));
+                }
+                return x;
+            }
+};
+
+struct PyrUpVec_32f{
+            int operator()(float** src, float** dst, int, int width) const
+            {
+                int x = 0;
+
+                if (!checkHardwareSupport(CV_CPU_VSX))
+                    return x;
+
+                const float *row0 = src[0], *row1 = src[1], *row2 = src[2];
+                float *dst0 = dst[0], *dst1 = dst[1];
+                v_float32x4 v_6 = v_setall_f32(6.0f), v_scale = v_setall_f32(1.f/64.0f),
+                            v_scale4 = v_scale * v_setall_f32(4.0f);
+
+                for( ; x <= width - 8; x += 8 )
+                {
+                    v_float32x4 v_r0 = v_load(row0 + x);
+                    v_float32x4 v_r1 = v_load(row1 + x);
+                    v_float32x4 v_r2 = v_load(row2 + x);
+
+                    v_store(dst1 + x, (v_scale4 * (v_r1 + v_r2)));
+                    v_store(dst0 + x, (v_scale * ((v_r0 + v_6*v_r1) + v_r2)) );
+
+                    v_r0 = v_load(row0 + x + 4);
+                    v_r1 = v_load(row1 + x + 4);
+                    v_r2 = v_load(row2 + x + 4);
+
+                    v_store(dst1 + x + 4, (v_scale4 * (v_r1 + v_r2)));
+                    v_store(dst0 + x + 4, (v_scale * ((v_r0 + v_6 * v_r1) + v_r2)));
+                }
+
+                return x;
+            }
+};
+/**********END OF THE VSX PART ***************************/
+
+#elif CV_SSE2
 
 struct PyrDownVec_32s8u
 {

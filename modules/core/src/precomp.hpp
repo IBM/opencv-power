@@ -89,6 +89,7 @@
 #include "arithm_core.hpp"
 #include "hal_replacement.hpp"
 
+#define USE_VSX  (cv::checkHardwareSupport(CV_CPU_VSX))
 #define GET_OPTIMIZED(func) (func)
 
 namespace cv

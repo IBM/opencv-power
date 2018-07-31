@@ -66,7 +66,7 @@ static void calcSharrDeriv(const cv::Mat& src, cv::Mat& dst)
 
 #if CV_SIMD128
     v_int16x8 c3 = v_setall_s16(3), c10 = v_setall_s16(10);
-    bool haveSIMD = checkHardwareSupport(CV_CPU_SSE2) || checkHardwareSupport(CV_CPU_NEON);
+    bool haveSIMD = checkHardwareSupport(CV_CPU_SSE2) || checkHardwareSupport(CV_CPU_NEON) || checkHardwareSupport(CV_CPU_VSX);
 #endif
 
     for( y = 0; y < rows; y++ )
@@ -261,6 +261,20 @@ void cv::detail::LKTrackerInvoker::operator()(const Range& range) const
 
 #endif
 
+#if CV_VSX
+        v_int32x4 z = v_setall_s32(0);
+        v_int32x4 qdelta_d = v_setall_s32(1 << (W_BITS1-1));
+        v_int32x4 qdelta = v_setall_s32(1 << (W_BITS1-5-1));
+        v_float32x4 qA11 = v_setall_f32(0), qA12 = v_setall_f32(0), qA22 = v_setall_f32(0);
+
+        static const vec_uchar16 permute_vector0 = {0x02,0x03,0x06,0x07, 0x0A,0x0B,0x0E,0x0F, 0x00,0x01,0x04,0x05, 0x08,0x09,0x0C,0x0D};
+        static const vec_uchar16 permute_vector1 = {0x00,0x11,0x12,0x13, 0x01,0x15,0x16,0x17, 0x02,0x19,0x1A,0x1B, 0x03,0x1D,0x1E,0x1F};
+        static const vec_uchar16 permute_vector2 = {0x00,0x01,0x00,0x01, 0x04,0x05,0x04,0x05, 0x08,0x09,0x08,0x09, 0x0C,0x0D,0x0C,0x0D};
+        static const vec_uchar16 permute_vector3 = {0x02,0x03,0x02,0x03, 0x06,0x07,0x06,0x07, 0x0A,0x0B,0x0A,0x0B, 0x0E,0x0F,0x0E,0x0F};
+        static const vec_uchar16 permute_vector4 = {0x00,0x01,0x10,0x11, 0x04,0x05,0x14,0x15, 0x08,0x09,0x18,0x19, 0x0C,0x0D,0x1C,0x1D};
+        static const vec_uchar16 permute_vector5 = {0x04,0x11,0x12,0x13, 0x05,0x15,0x16,0x17, 0x06,0x19,0x1A,0x1B, 0x07,0x1D,0x1E,0x1F};
+#endif
+
         // extract the patch from the first image, compute covariation matrix of derivatives
         int x, y;
         for( y = 0; y < winSize.height; y++ )
@@ -398,6 +412,75 @@ void cv::detail::LKTrackerInvoker::operator()(const Range& range) const
             }
 #endif
 
+#if CV_VSX
+            for( ; x <= winSize.width*cn - 4; x += 4, dsrc += 4*2, dIptr += 4*2 )
+            {
+                v_int32x4 vc00, vc01, vc10, vc11;
+
+                vc00 = v_load((int *)(src + x));
+                vc01 = v_load((int *)(src + x + cn));
+                vc10 = v_load((int *)(src + x + stepI));
+                vc11 = v_load((int *)(src + x + stepI + cn));
+
+                v_int32x4 vt, vtx, vty, vt00, vt01, vt10, vt11;
+
+                vt00 = v_int32x4((vec_int4)vec_perm(vc00.val, z.val, permute_vector1));
+                vt01 = v_int32x4((vec_int4)vec_perm(vc01.val, z.val, permute_vector1));
+                vt10 = v_int32x4((vec_int4)vec_perm(vc10.val, z.val, permute_vector1));
+                vt11 = v_int32x4((vec_int4)vec_perm(vc11.val, z.val, permute_vector1));
+                vt = vt00 * v_setall_s32(iw00);
+                vt = vt01 * v_setall_s32(iw01) + vt;
+                vt = vt10 * v_setall_s32(iw10) + vt;
+                vt = vt11 * v_setall_s32(iw11) + vt;
+                vt = (vt + qdelta) >> (W_BITS1-5);
+                v_store_high((ushort *)(Iptr + x), v_uint16x8((vec_ushort8)vec_perm(vt.val, vt.val, permute_vector0)));
+
+                v_int16x8 vs00, vs01, vs10, vs11;
+                vs00 = v_load((short *)(dsrc));
+                vs01 = v_load((short *)(dsrc + cn2));
+                vs10 = v_load((short *)(dsrc + dstep));
+                vs11 = v_load((short *)(dsrc + dstep + cn2));
+
+                vt00 = v_int32x4((vec_int4)vec_perm(vs00.val, vs00.val, permute_vector2));
+                vt01 = v_int32x4((vec_int4)vec_perm(vs01.val, vs01.val, permute_vector2));
+                vt10 = v_int32x4((vec_int4)vec_perm(vs10.val, vs10.val, permute_vector2));
+                vt11 = v_int32x4((vec_int4)vec_perm(vs11.val, vs11.val, permute_vector2));
+                vt00 = vt00 >> 16;
+                vt01 = vt01 >> 16;
+                vt10 = vt10 >> 16;
+                vt11 = vt11 >> 16;
+                vtx = vt00 * v_setall_s32(iw00);
+                vtx = vt01 * v_setall_s32(iw01) + vtx;
+                vtx = vt10 * v_setall_s32(iw10) + vtx;
+                vtx = vt11 * v_setall_s32(iw11) + vtx;
+                vtx = (vtx + qdelta_d) >> (W_BITS1);
+
+                vt00 = v_int32x4((vec_int4)vec_perm(vs00.val, vs00.val, permute_vector3));
+                vt01 = v_int32x4((vec_int4)vec_perm(vs01.val, vs01.val, permute_vector3));
+                vt10 = v_int32x4((vec_int4)vec_perm(vs10.val, vs10.val, permute_vector3));
+                vt11 = v_int32x4((vec_int4)vec_perm(vs11.val, vs11.val, permute_vector3));
+                vt00 = vt00 >> 16;
+                vt01 = vt01 >> 16;
+                vt10 = vt10 >> 16;
+                vt11 = vt11 >> 16;
+                vty = vt00 * v_setall_s32(iw00);
+                vty = vt01 * v_setall_s32(iw01) + vty;
+                vty = vt10 * v_setall_s32(iw10) + vty;
+                vty = vt11 * v_setall_s32(iw11) + vty;
+                vty = (vty + qdelta_d) >> (W_BITS1);
+
+                vt = v_int32x4((vec_int4)vec_perm(vtx.val, vty.val, permute_vector4));
+                v_store((int *)dIptr, vt);
+
+                v_float32x4 fx = v_cvt_f32(vtx);
+                v_float32x4 fy = v_cvt_f32(vty);
+
+                qA22 = v_muladd(fy, fy, qA22);
+                qA12 = v_muladd(fx, fy, qA12);
+                qA11 = v_muladd(fx, fx, qA11);
+            }
+#endif
+
             for( ; x < winSize.width*cn; x++, dsrc += 2, dIptr += 2 )
             {
                 int ival = CV_DESCALE(src[x]*iw00 + src[x+cn]*iw01 +
@@ -431,6 +514,12 @@ void cv::detail::LKTrackerInvoker::operator()(const Range& range) const
         iA11 += nA11[0] + nA11[1] + nA11[2] + nA11[3];
         iA12 += nA12[0] + nA12[1] + nA12[2] + nA12[3];
         iA22 += nA22[0] + nA22[1] + nA22[2] + nA22[3];
+#endif
+
+#if CV_VSX
+        iA11 += v_reduce_sum(qA11);
+        iA12 += v_reduce_sum(qA12);
+        iA22 += v_reduce_sum(qA22);
 #endif
 
         A11 = iA11*FLT_SCALE;
@@ -491,6 +580,10 @@ void cv::detail::LKTrackerInvoker::operator()(const Range& range) const
             const int16x4_t d28_2 = vdup_n_s16((int16_t)iw10);
             const int16x4_t d29_2 = vdup_n_s16((int16_t)iw11);
 
+#endif
+
+#if CV_VSX
+            v_float32x4 qb0 = v_setall_f32(0.f), qb1 = v_setall_f32(0.f);
 #endif
 
             for( y = 0; y < winSize.height; y++ )
@@ -604,6 +697,62 @@ void cv::detail::LKTrackerInvoker::operator()(const Range& range) const
                 }
 #endif
 
+#if CV_VSX
+                for( ; x <= winSize.width*cn - 8; x += 8, dIptr += 8*2 )
+                {
+                    v_int32x4 vc00, vc01, vc10, vc11;
+
+                    vc00 = v_load((int *)(Jptr + x));
+                    vc01 = v_load((int *)(Jptr + x + cn));
+                    vc10 = v_load((int *)(Jptr + x + stepI));
+                    vc11 = v_load((int *)(Jptr + x + stepI + cn));
+
+                    v_int32x4 vt0, vt1, vt00, vt01, vt10, vt11;
+
+                    vt00 = v_int32x4((vec_int4)vec_perm(vc00.val, z.val, permute_vector1));
+                    vt01 = v_int32x4((vec_int4)vec_perm(vc01.val, z.val, permute_vector1));
+                    vt10 = v_int32x4((vec_int4)vec_perm(vc10.val, z.val, permute_vector1));
+                    vt11 = v_int32x4((vec_int4)vec_perm(vc11.val, z.val, permute_vector1));
+
+                    vt0 = vt00 * v_setall_s32(iw00);
+                    vt0 = vt01 * v_setall_s32(iw01) + vt0;
+                    vt0 = vt10 * v_setall_s32(iw10) + vt0;
+                    vt0 = vt11 * v_setall_s32(iw11) + vt0;
+                    vt0 = (vt0 + qdelta) >> (W_BITS1-5);
+
+                    vt00 = v_int32x4((vec_int4)vec_perm(vc00.val, z.val, permute_vector5));
+                    vt01 = v_int32x4((vec_int4)vec_perm(vc01.val, z.val, permute_vector5));
+                    vt10 = v_int32x4((vec_int4)vec_perm(vc10.val, z.val, permute_vector5));
+                    vt11 = v_int32x4((vec_int4)vec_perm(vc11.val, z.val, permute_vector5));
+
+                    vt1 = vt00 * v_setall_s32(iw00);
+                    vt1 = vt01 * v_setall_s32(iw01) + vt1;
+                    vt1 = vt10 * v_setall_s32(iw10) + vt1;
+                    vt1 = vt11 * v_setall_s32(iw11) + vt1;
+                    vt1 = (vt1 + qdelta) >> (W_BITS1-5);
+
+                    v_int16x8 vs00, vs01;
+                    vs00 = v_load((short *)(Iptr + x));
+                    v_expand(v_reinterpret_as_s16(vs00), vt00, vt01);
+
+                    vt0 = vt0 - vt00;
+                    vt1 = vt1 - vt01;
+
+                    vs00 = v_load((short *)(dIptr));
+                    vs01 = v_load((short *)(dIptr+8));
+                    vt00 = v_int32x4((vec_int4)vec_perm(vs00.val, vs00.val, permute_vector2));
+                    vt00 = vt00 >> 16;
+                    vt01 = v_int32x4((vec_int4)vec_perm(vs00.val, vs00.val, permute_vector3));
+                    vt01 = vt01 >> 16;
+                    vt10 = v_int32x4((vec_int4)vec_perm(vs01.val, vs01.val, permute_vector2));
+                    vt10 = vt10 >> 16;
+                    vt11 = v_int32x4((vec_int4)vec_perm(vs01.val, vs01.val, permute_vector3));
+                    vt11 = vt11 >> 16;
+
+                    qb0 = v_cvt_f32(vt0 * vt00 + vt1 * vt10) + qb0;
+                    qb1 = v_cvt_f32(vt0 * vt01 + vt1 * vt11) + qb1;
+                }
+#endif
                 for( ; x < winSize.width*cn; x++, dIptr += 2 )
                 {
                     int diff = CV_DESCALE(Jptr[x]*iw00 + Jptr[x+cn]*iw01 +
@@ -625,6 +774,11 @@ void cv::detail::LKTrackerInvoker::operator()(const Range& range) const
 
             ib1 += (float)(nB1[0] + nB1[1] + nB1[2] + nB1[3]);
             ib2 += (float)(nB2[0] + nB2[1] + nB2[2] + nB2[3]);
+#endif
+
+#if CV_VSX
+            ib1 += v_reduce_sum(qb0);
+            ib2 += v_reduce_sum(qb1);
 #endif
 
             b1 = ib1*FLT_SCALE;

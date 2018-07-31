@@ -669,10 +669,10 @@ cvRunHaarClassifierCascadeSum( const CvHaarClassifierCascade* _cascade,
 {
 #if CV_HAAR_USE_AVX
     bool haveAVX = CV_CPU_HAS_SUPPORT_AVX;
-#else
-#  ifdef CV_HAAR_USE_SSE
+#elif CV_HAAR_USE_SSE
     bool haveSSE2 = cv::checkHardwareSupport(CV_CPU_SSE2);
-#  endif
+#elif CV_VSX
+    bool haveVSX = cv::checkHardwareSupport(CV_CPU_VSX);
 #endif
 
     int p_offset, pq_offset;
@@ -722,6 +722,16 @@ cvRunHaarClassifierCascadeSum( const CvHaarClassifierCascade* _cascade,
                     stage_sum += cv_haar_avx::icvEvalHidHaarClassifierAVX(
                                                      ptr->classifier + j,
                                                      variance_norm_factor, p_offset );
+                }
+            }
+#elif CV_VSX
+            if(haveVSX)
+            {
+                for( ; j <= ptr->count - 8; j += 8 )
+                {
+                    stage_sum += icvEvalHidHaarClassifierVSX(
+                                    ptr->classifier + j,
+                                    variance_norm_factor, p_offset );
                 }
             }
 #endif
@@ -848,7 +858,63 @@ cvRunHaarClassifierCascadeSum( const CvHaarClassifierCascade* _cascade,
             }
         }
         else
-#endif // AVX or SSE
+#elif CV_VSX
+        if(haveVSX)
+        {
+            for( i = start_stage; i < cascade->count; i++ )
+            {
+                stage_sum = 0.0;
+                j = 0;
+                if( cascade->stage_classifier[i].two_rects )
+                {
+                    //printf("icvEvalHidHaarStumpClassifierTwoRectVSX\n");
+                    for( ; j <= cascade->stage_classifier[i].count - 8; j += 8 )
+                    {
+                        stage_sum += icvEvalHidHaarStumpClassifierTwoRectVSX(
+                                        cascade->stage_classifier[i].classifier + j,
+                                        variance_norm_factor, p_offset);
+                    }
+
+                    for( ; j < cascade->stage_classifier[i].count; j++ )
+                    {
+                        CvHidHaarClassifier* classifier = cascade->stage_classifier[i].classifier + j;
+                        CvHidHaarTreeNode* node = classifier->node;
+
+                        double t = node->threshold*variance_norm_factor;
+                        double sum = calc_sum(node->feature.rect[0],p_offset) * node->feature.rect[0].weight;
+                        sum += calc_sum(node->feature.rect[1],p_offset) * node->feature.rect[1].weight;
+                        stage_sum += classifier->alpha[sum >= t];
+                    }
+                }
+                else
+                {
+                    //printf("icvEvalHidHaarStumpClassifierVSX\n");
+                    for( ; j <= (cascade->stage_classifier[i].count)-8; j+=8 )
+                    {
+                        stage_sum += icvEvalHidHaarStumpClassifierVSX(
+                                        cascade->stage_classifier[i].classifier + j,
+                                        variance_norm_factor, p_offset);
+                    }
+
+                    for( ; j < cascade->stage_classifier[i].count; j++ )
+                    {
+                        CvHidHaarClassifier* classifier = cascade->stage_classifier[i].classifier + j;
+                        CvHidHaarTreeNode* node = classifier->node;
+
+                        double t = node->threshold*variance_norm_factor;
+                        double sum = calc_sum(node->feature.rect[0],p_offset) * node->feature.rect[0].weight;
+                        sum += calc_sum(node->feature.rect[1],p_offset) * node->feature.rect[1].weight;
+                        if( node->feature.rect[2].p0 )
+                            sum += calc_sum(node->feature.rect[2],p_offset) * node->feature.rect[2].weight;
+                        stage_sum += classifier->alpha[sum >= t];
+                    }
+                }
+                if( stage_sum < cascade->stage_classifier[i].threshold )
+                    return -i;
+            }
+        }
+        else
+#endif // AVX, SSE or VSX
         {
             for( i = start_stage; i < cascade->count; i++ )
             {
@@ -897,6 +963,16 @@ cvRunHaarClassifierCascadeSum( const CvHaarClassifierCascade* _cascade,
                 for( ; k < cascade->stage_classifier[i].count - 8; k += 8 )
                 {
                     stage_sum += cv_haar_avx::icvEvalHidHaarClassifierAVX(
+                                                     cascade->stage_classifier[i].classifier + k,
+                                                     variance_norm_factor, p_offset );
+                }
+            }
+#elif CV_VSX
+            if(haveVSX)
+            {
+                for( ; k < cascade->stage_classifier[i].count - 8; k += 8 )
+                {
+                    stage_sum += icvEvalHidHaarClassifierVSX(
                                                      cascade->stage_classifier[i].classifier + k,
                                                      variance_norm_factor, p_offset );
                 }
@@ -2289,5 +2365,355 @@ CvType haar_type( CV_TYPE_NAME_HAAR, icvIsHaarClassifier,
                   (CvReleaseFunc)cvReleaseHaarClassifierCascade,
                   icvReadHaarClassifier, icvWriteHaarClassifier,
                   icvCloneHaarClassifier );
+
+#if CV_VSX
+using namespace cv;
+double icvEvalHidHaarClassifierVSX(CvHidHaarClassifier* classifier,
+    double variance_norm_factor, size_t p_offset)
+{
+    int  CV_DECL_ALIGNED(32) idxV[8] = { 0,0,0,0,0,0,0,0 };
+    uchar flags[8] = { 0,0,0,0,0,0,0,0 };
+    CvHidHaarTreeNode* nodes[8];
+    double res = 0;
+    uchar exitConditionFlag = 0;
+    for (;;)
+    {
+        float CV_DECL_ALIGNED(32) tmp[8] = { 0,0,0,0,0,0,0,0 };
+        nodes[0] = (classifier + 0)->node + idxV[0];
+        nodes[1] = (classifier + 1)->node + idxV[1];
+        nodes[2] = (classifier + 2)->node + idxV[2];
+        nodes[3] = (classifier + 3)->node + idxV[3];
+        nodes[4] = (classifier + 4)->node + idxV[4];
+        nodes[5] = (classifier + 5)->node + idxV[5];
+        nodes[6] = (classifier + 6)->node + idxV[6];
+        nodes[7] = (classifier + 7)->node + idxV[7];
+
+        v_float32x4 t1 = v_setall_f32(static_cast<float>(variance_norm_factor));
+        v_float32x4 t2 = t1;
+
+        t1 = t1 * (v_float32x4){ nodes[0]->threshold,
+                                 nodes[1]->threshold,
+                                 nodes[2]->threshold,
+                                 nodes[3]->threshold};
+        t2 = t2 * (v_float32x4){ nodes[4]->threshold,
+                                 nodes[5]->threshold,
+                                 nodes[6]->threshold,
+                                 nodes[7]->threshold};
+
+        v_float32x4 offset1 =
+                    v_float32x4{calc_sumf(nodes[0]->feature.rect[0], p_offset),
+                                calc_sumf(nodes[1]->feature.rect[0], p_offset),
+                                calc_sumf(nodes[2]->feature.rect[0], p_offset),
+                                calc_sumf(nodes[3]->feature.rect[0], p_offset)};
+        v_float32x4 offset2 =
+                    v_float32x4{calc_sumf(nodes[4]->feature.rect[0], p_offset),
+                                calc_sumf(nodes[5]->feature.rect[0], p_offset),
+                                calc_sumf(nodes[6]->feature.rect[0], p_offset),
+                                calc_sumf(nodes[7]->feature.rect[0], p_offset)};
+        v_float32x4 weight1 =
+                    v_float32x4{nodes[0]->feature.rect[0].weight,
+                                nodes[1]->feature.rect[0].weight,
+                                nodes[2]->feature.rect[0].weight,
+                                nodes[3]->feature.rect[0].weight};
+       v_float32x4 weight2 =
+                    v_float32x4{nodes[4]->feature.rect[0].weight,
+                                nodes[5]->feature.rect[0].weight,
+                                nodes[6]->feature.rect[0].weight,
+                                nodes[7]->feature.rect[0].weight};
+
+        v_float32x4 sum1 = offset1 * weight1;
+        v_float32x4 sum2 = offset2 * weight2;
+
+        offset1 = v_float32x4{calc_sumf(nodes[0]->feature.rect[1], p_offset),
+                              calc_sumf(nodes[1]->feature.rect[1], p_offset),
+                              calc_sumf(nodes[2]->feature.rect[1], p_offset),
+                              calc_sumf(nodes[3]->feature.rect[1], p_offset)};
+        offset2 = v_float32x4{calc_sumf(nodes[4]->feature.rect[1], p_offset),
+                              calc_sumf(nodes[5]->feature.rect[1], p_offset),
+                              calc_sumf(nodes[6]->feature.rect[1], p_offset),
+                              calc_sumf(nodes[7]->feature.rect[1], p_offset)};
+        weight1 = v_float32x4{nodes[0]->feature.rect[1].weight,
+                              nodes[1]->feature.rect[1].weight,
+                              nodes[2]->feature.rect[1].weight,
+                              nodes[3]->feature.rect[1].weight};
+        weight2 = v_float32x4{nodes[4]->feature.rect[1].weight,
+                              nodes[5]->feature.rect[1].weight,
+                              nodes[6]->feature.rect[1].weight,
+                              nodes[7]->feature.rect[1].weight};
+
+        sum1 = sum1 + offset1 * weight1;
+        sum2 = sum2 + offset2 * weight2;
+
+        if (nodes[0]->feature.rect[2].p0)
+            tmp[0] = calc_sumf(nodes[0]->feature.rect[2], p_offset) * nodes[0]->feature.rect[2].weight;
+        if (nodes[1]->feature.rect[2].p0)
+            tmp[1] = calc_sumf(nodes[1]->feature.rect[2], p_offset) * nodes[1]->feature.rect[2].weight;
+        if (nodes[2]->feature.rect[2].p0)
+            tmp[2] = calc_sumf(nodes[2]->feature.rect[2], p_offset) * nodes[2]->feature.rect[2].weight;
+        if (nodes[3]->feature.rect[2].p0)
+            tmp[3] = calc_sumf(nodes[3]->feature.rect[2], p_offset) * nodes[3]->feature.rect[2].weight;
+        if (nodes[4]->feature.rect[2].p0)
+            tmp[4] = calc_sumf(nodes[4]->feature.rect[2], p_offset) * nodes[4]->feature.rect[2].weight;
+        if (nodes[5]->feature.rect[2].p0)
+            tmp[5] = calc_sumf(nodes[5]->feature.rect[2], p_offset) * nodes[5]->feature.rect[2].weight;
+        if (nodes[6]->feature.rect[2].p0)
+            tmp[6] = calc_sumf(nodes[6]->feature.rect[2], p_offset) * nodes[6]->feature.rect[2].weight;
+        if (nodes[7]->feature.rect[2].p0)
+            tmp[7] = calc_sumf(nodes[7]->feature.rect[2], p_offset) * nodes[7]->feature.rect[2].weight;
+
+        sum1 = sum1 + v_load(tmp);
+        sum2 = sum2 + v_load(tmp+4);
+        v_float32x4 left1 = v_float32x4{static_cast<float>(nodes[0]->left),
+                                        static_cast<float>(nodes[1]->left),
+                                        static_cast<float>(nodes[2]->left),
+                                        static_cast<float>(nodes[3]->left)};
+        v_float32x4 left2 = v_float32x4{static_cast<float>(nodes[4]->left),
+                                        static_cast<float>(nodes[5]->left),
+                                        static_cast<float>(nodes[6]->left),
+                                        static_cast<float>(nodes[7]->left)};
+
+        v_float32x4 right1 = v_float32x4{static_cast<float>(nodes[0]->right),
+                                         static_cast<float>(nodes[1]->right),
+                                         static_cast<float>(nodes[2]->right),
+                                         static_cast<float>(nodes[3]->right)};
+        v_float32x4 right2 = v_float32x4{static_cast<float>(nodes[4]->right),
+                                         static_cast<float>(nodes[5]->right),
+                                         static_cast<float>(nodes[6]->right),
+                                         static_cast<float>(nodes[7]->right)};
+
+        v_float32x4 mask1 = (sum1 < t1);
+        v_float32x4 mask2 = (sum2 < t2);
+
+        v_store(idxV, v_round(v_select(mask1, left1, right1)));
+        v_store(idxV+4, v_round(v_select(mask2, left2, right2)));
+        for (int i = 0; i < 8; i++)
+        {
+            if (idxV[i] <= 0)
+            {
+                if (!flags[i])
+                {
+                    exitConditionFlag++;
+                    flags[i] = 1;
+                    res += (classifier + i)->alpha[-idxV[i]];
+                }
+                idxV[i] = 0;
+            }
+        }
+        if (exitConditionFlag == 8)
+            return res;
+
+    }
+}
+
+double icvEvalHidHaarStumpClassifierVSX(CvHidHaarClassifier* classifier,
+    double variance_norm_factor, size_t p_offset)
+{
+    float CV_DECL_ALIGNED(32) tmp[8] = { 0,0,0,0,0,0,0,0 };
+    CvHidHaarTreeNode* nodes[8];
+
+    nodes[0] = classifier[0].node;
+    nodes[1] = classifier[1].node;
+    nodes[2] = classifier[2].node;
+    nodes[3] = classifier[3].node;
+    nodes[4] = classifier[4].node;
+    nodes[5] = classifier[5].node;
+    nodes[6] = classifier[6].node;
+    nodes[7] = classifier[7].node;
+
+    v_float32x4 t1 = v_setall_f32(static_cast<float>(variance_norm_factor));
+    v_float32x4 t2 = v_setall_f32(static_cast<float>(variance_norm_factor));
+
+    t1 = t1 * (v_float32x4){ nodes[0]->threshold, nodes[1]->threshold,nodes[2]->threshold,nodes[3]->threshold};
+    t2 = t2 * (v_float32x4){ nodes[4]->threshold, nodes[5]->threshold,nodes[6]->threshold,nodes[7]->threshold};
+
+    v_float32x4 offset1 = (v_float32x4){
+                           calc_sumf(nodes[0]->feature.rect[0], p_offset),
+                           calc_sumf(nodes[1]->feature.rect[0], p_offset),
+                           calc_sumf(nodes[2]->feature.rect[0], p_offset),
+                           calc_sumf(nodes[3]->feature.rect[0], p_offset)};
+    v_float32x4 offset2 = (v_float32x4){
+                           calc_sumf(nodes[4]->feature.rect[0], p_offset),
+                           calc_sumf(nodes[5]->feature.rect[0], p_offset),
+                           calc_sumf(nodes[6]->feature.rect[0], p_offset),
+                           calc_sumf(nodes[7]->feature.rect[0], p_offset)};
+
+    v_float32x4 weight1 = (v_float32x4){
+                          nodes[0]->feature.rect[0].weight,
+                          nodes[1]->feature.rect[0].weight,
+                          nodes[2]->feature.rect[0].weight,
+                          nodes[3]->feature.rect[0].weight};
+    v_float32x4 weight2 = (v_float32x4){
+                          nodes[4]->feature.rect[0].weight,
+                          nodes[5]->feature.rect[0].weight,
+                          nodes[6]->feature.rect[0].weight,
+                          nodes[7]->feature.rect[0].weight};
+
+    v_float32x4 sum1 = offset1 * weight1;
+    v_float32x4 sum2 = offset2 * weight2;
+
+    offset1 = (v_float32x4){
+                           calc_sumf(nodes[0]->feature.rect[1], p_offset),
+                           calc_sumf(nodes[1]->feature.rect[1], p_offset),
+                           calc_sumf(nodes[2]->feature.rect[1], p_offset),
+                           calc_sumf(nodes[3]->feature.rect[1], p_offset)};
+    offset2 = (v_float32x4){
+                           calc_sumf(nodes[4]->feature.rect[1], p_offset),
+                           calc_sumf(nodes[5]->feature.rect[1], p_offset),
+                           calc_sumf(nodes[6]->feature.rect[1], p_offset),
+                           calc_sumf(nodes[7]->feature.rect[1], p_offset)};
+
+    weight1 = (v_float32x4){
+                          nodes[0]->feature.rect[1].weight,
+                          nodes[1]->feature.rect[1].weight,
+                          nodes[2]->feature.rect[1].weight,
+                          nodes[3]->feature.rect[1].weight};
+    weight2 = (v_float32x4){
+                          nodes[4]->feature.rect[1].weight,
+                          nodes[5]->feature.rect[1].weight,
+                          nodes[6]->feature.rect[1].weight,
+                          nodes[7]->feature.rect[1].weight};
+
+    sum1 = sum1 + weight1 * offset1;
+    sum2 = sum2 + weight2 * offset2;
+
+    if (nodes[0]->feature.rect[2].p0)
+        tmp[0] = calc_sumf(nodes[0]->feature.rect[2], p_offset) * nodes[0]->feature.rect[2].weight;
+    if (nodes[1]->feature.rect[2].p0)
+        tmp[1] = calc_sumf(nodes[1]->feature.rect[2], p_offset) * nodes[1]->feature.rect[2].weight;
+    if (nodes[2]->feature.rect[2].p0)
+        tmp[2] = calc_sumf(nodes[2]->feature.rect[2], p_offset) * nodes[2]->feature.rect[2].weight;
+    if (nodes[3]->feature.rect[2].p0)
+        tmp[3] = calc_sumf(nodes[3]->feature.rect[2], p_offset) * nodes[3]->feature.rect[2].weight;
+    if (nodes[4]->feature.rect[2].p0)
+        tmp[4] = calc_sumf(nodes[4]->feature.rect[2], p_offset) * nodes[4]->feature.rect[2].weight;
+    if (nodes[5]->feature.rect[2].p0)
+        tmp[5] = calc_sumf(nodes[5]->feature.rect[2], p_offset) * nodes[5]->feature.rect[2].weight;
+    if (nodes[6]->feature.rect[2].p0)
+        tmp[6] = calc_sumf(nodes[6]->feature.rect[2], p_offset) * nodes[6]->feature.rect[2].weight;
+    if (nodes[7]->feature.rect[2].p0)
+        tmp[7] = calc_sumf(nodes[7]->feature.rect[2], p_offset) * nodes[7]->feature.rect[2].weight;
+
+    sum1 = sum1 + v_load(tmp);
+    sum2 = sum2 + v_load(tmp+4);
+
+    v_float32x4 alpha00 = (v_float32x4){
+                            classifier[0].alpha[0],
+                            classifier[1].alpha[0],
+                            classifier[2].alpha[0],
+                            classifier[3].alpha[0]};
+    v_float32x4 alpha01 = (v_float32x4){
+                            classifier[4].alpha[0],
+                            classifier[5].alpha[0],
+                            classifier[6].alpha[0],
+                            classifier[7].alpha[0]};
+    v_float32x4 alpha10 = (v_float32x4){
+                            classifier[0].alpha[1],
+                            classifier[1].alpha[1],
+                            classifier[2].alpha[1],
+                            classifier[3].alpha[1]};
+    v_float32x4 alpha11 = (v_float32x4){
+                            classifier[4].alpha[1],
+                            classifier[5].alpha[1],
+                            classifier[6].alpha[1],
+                            classifier[7].alpha[1]};
+
+    v_float32x4 outBuf1 = v_select(t1 <= sum1, alpha10, alpha00);
+    v_float32x4 outBuf2 = v_select(t2 <= sum2, alpha11, alpha01);
+    float a = v_reduce_sum(outBuf1), b = v_reduce_sum(outBuf2);
+    return a+b;
+}
+
+double icvEvalHidHaarStumpClassifierTwoRectVSX(CvHidHaarClassifier* classifier,
+    double variance_norm_factor, size_t p_offset)
+{
+    CvHidHaarTreeNode* nodes[8];
+    nodes[0] = classifier[0].node;
+    nodes[1] = classifier[1].node;
+    nodes[2] = classifier[2].node;
+    nodes[3] = classifier[3].node;
+    nodes[4] = classifier[4].node;
+    nodes[5] = classifier[5].node;
+    nodes[6] = classifier[6].node;
+    nodes[7] = classifier[7].node;
+
+    v_float32x4 t1 = v_setall_f32(static_cast<float>(variance_norm_factor));
+    v_float32x4 t2 = v_setall_f32(static_cast<float>(variance_norm_factor));
+
+    t1 = t1 * v_float32x4(nodes[0]->threshold,
+                          nodes[1]->threshold,
+                          nodes[2]->threshold,
+                          nodes[3]->threshold);
+
+    t2 = t2 * v_float32x4(nodes[4]->threshold,
+                          nodes[5]->threshold,
+                          nodes[6]->threshold,
+                          nodes[7]->threshold);
+
+    v_float32x4 offset1 = v_float32x4(calc_sumf(nodes[0]->feature.rect[0], p_offset),
+                                      calc_sumf(nodes[1]->feature.rect[0], p_offset),
+                                      calc_sumf(nodes[2]->feature.rect[0], p_offset),
+                                      calc_sumf(nodes[3]->feature.rect[0], p_offset));
+    v_float32x4 offset2 = v_float32x4(calc_sumf(nodes[4]->feature.rect[0], p_offset),
+                                      calc_sumf(nodes[5]->feature.rect[0], p_offset),
+                                      calc_sumf(nodes[6]->feature.rect[0], p_offset),
+                                      calc_sumf(nodes[7]->feature.rect[0], p_offset));
+
+    v_float32x4 weight1 = v_float32x4(nodes[0]->feature.rect[0].weight,
+                                      nodes[1]->feature.rect[0].weight,
+                                      nodes[2]->feature.rect[0].weight,
+                                      nodes[3]->feature.rect[0].weight);
+    v_float32x4 weight2 = v_float32x4(nodes[4]->feature.rect[0].weight,
+                                      nodes[5]->feature.rect[0].weight,
+                                      nodes[6]->feature.rect[0].weight,
+                                      nodes[7]->feature.rect[0].weight);
+
+    v_float32x4 sum1 = offset1 * weight1;
+    v_float32x4 sum2 = offset2 * weight2;
+
+    offset1 = v_float32x4(calc_sumf(nodes[0]->feature.rect[1], p_offset),
+                          calc_sumf(nodes[1]->feature.rect[1], p_offset),
+                          calc_sumf(nodes[2]->feature.rect[1], p_offset),
+                          calc_sumf(nodes[3]->feature.rect[1], p_offset));
+    offset2 = v_float32x4(calc_sumf(nodes[4]->feature.rect[1], p_offset),
+                          calc_sumf(nodes[5]->feature.rect[1], p_offset),
+                          calc_sumf(nodes[6]->feature.rect[1], p_offset),
+                          calc_sumf(nodes[7]->feature.rect[1], p_offset));
+
+    weight1 = v_float32x4(nodes[0]->feature.rect[1].weight,
+                          nodes[1]->feature.rect[1].weight,
+                          nodes[2]->feature.rect[1].weight,
+                          nodes[3]->feature.rect[1].weight);
+    weight2 = v_float32x4(nodes[4]->feature.rect[1].weight,
+                          nodes[5]->feature.rect[1].weight,
+                          nodes[6]->feature.rect[1].weight,
+                          nodes[7]->feature.rect[1].weight);
+
+    sum1 = sum1 + offset1*weight1;
+    sum2 = sum2 + offset2*weight2;
+
+    v_float32x4 alpha00 = v_float32x4(classifier[0].alpha[0],
+                                      classifier[1].alpha[0],
+                                      classifier[2].alpha[0],
+                                      classifier[3].alpha[0]);
+    v_float32x4 alpha01 = v_float32x4(classifier[4].alpha[0],
+                                      classifier[5].alpha[0],
+                                      classifier[6].alpha[0],
+                                      classifier[7].alpha[0]);
+
+    v_float32x4 alpha10 = v_float32x4(classifier[0].alpha[1],
+                                      classifier[1].alpha[1],
+                                      classifier[2].alpha[1],
+                                      classifier[3].alpha[1]);
+    v_float32x4 alpha11 = v_float32x4(classifier[4].alpha[1],
+                                      classifier[5].alpha[1],
+                                      classifier[6].alpha[1],
+                                      classifier[7].alpha[1]);
+    v_float32x4 out1 = v_select((t1 <= sum1), alpha10, alpha00);
+    v_float32x4 out2 = v_select((t2 <= sum2), alpha11, alpha10 );
+    out1 = out1 + out2;
+
+    return v_reduce_sum(out1);
+}
+#endif
 
 /* End of file. */

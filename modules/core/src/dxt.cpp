@@ -463,6 +463,106 @@ template<> struct DFT_VecR4<float>
     }
 };
 
+#elif CV_VSX
+
+// optimized radix-4 transform
+template<> struct DFT_VecR4<float>
+{
+    int operator()(Complex<float>* dst, int N, int n0, int& _dw0, const Complex<float>* wave) const
+    {
+        int n = 1, i, j, nx, dw, dw0 = _dw0;
+        v_float32x4 z = v_setall_f32(0.0f), x02=z, x13=z, t01, t02, t13, t23, w01=z, w23=z, y01, y23, t0, t1;
+        static const uchar CV_DECL_ALIGNED(16) inv[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0x80};
+        static const v_float32x4 v1m1 = v_float32x4(-1.0f, 1.0f, -1.0f, 1.0f);
+        static const vec_uchar16 permute_vector1 = {0x08,0x09,0x0A,0x0B, 0x0C,0x0D,0x0E,0x0F, 0x1C,0x1D,0x1E,0x1F, 0x18,0x19,0x1A,0x1B};
+        static const vec_uchar16 permute_vector2 = {0x04,0x05,0x06,0x07, 0x00,0x01,0x02,0x03, 0x1C,0x1D,0x1E,0x1F, 0x18,0x19,0x1A,0x1B};
+        static const vec_uchar16 permute_vector3 = {0x04,0x05,0x06,0x07, 0x04,0x05,0x06,0x07, 0x10,0x11,0x12,0x13, 0x10,0x11,0x12,0x13};
+        static const vec_uchar16 permute_vector4 = {0x04,0x05,0x06,0x07, 0x00,0x01,0x02,0x03, 0x10,0x11,0x12,0x13, 0x14,0x15,0x16,0x17};
+        static const vec_uchar16 permute_vector5 = {0x00,0x01,0x02,0x03, 0x00,0x01,0x02,0x03, 0x08,0x09,0x0A,0x0B, 0x08,0x09,0x0A,0x0B};
+        static const vec_uchar16 permute_vector6 = {0x04,0x05,0x06,0x07, 0x04,0x05,0x06,0x07, 0x0C,0x0D,0x0E,0x0F, 0x0C,0x0D,0x0E,0x0F};
+
+        v_float32x4 neg3_mask = v_load((float*)inv);
+
+        for( ; n*4 <= N; )
+        {
+            nx = n;
+            n *= 4;
+            dw0 /= 4;
+
+            for( i = 0; i < n0; i += n )
+            {
+                Complexf *v0, *v1;
+
+                v0 = dst + i;
+                v1 = v0 + nx*2;
+
+                x02 = v_load((const float *)&v0[0]);
+                x13 = v_load((const float *)&v0[nx]);
+                t02 = v_load((const float *)&v1[0]);
+                t13 = v_load((const float *)&v1[nx]);
+                x02 = v_float32x4((vec_float4)vec_mergeh((vec_double2)x02.val, (vec_double2)t02.val));
+                x13 = v_float32x4((vec_float4)vec_mergeh((vec_double2)x13.val, (vec_double2)t13.val));
+
+                y01 = x02 + x13;
+                y23 = x02 - x13;
+                t1 = (v_float32x4)(vec_perm(y01.val, y23.val, permute_vector1)) ^ neg3_mask;
+                t0 = v_combine_low(y01, y23);
+                y01 = t0 + t1;
+                y23 = t0 - t1;
+
+                vec_st_l8(y01.val, (float *)&v0[0]);
+                vec_st_h8(y01.val, (float *)&v0[nx]);
+                vec_st_l8(y23.val, (float *)&v1[0]);
+                vec_st_h8(y23.val, (float *)&v1[nx]);
+
+                for( j = 1, dw = dw0; j < nx; j++, dw += dw0 )
+                {
+                    v0 = dst + i + j;
+                    v1 = v0 + nx*2;
+
+                    x13 = v_load((const float *)&v0[nx]);
+                    w23 = v_load((const float *)&wave[dw*2]);
+                    t13 = v_load((const float *)&v1[nx]);
+                    t23 = v_load((const float *)&wave[dw*3]);
+                    x13 = v_float32x4((vec_float4)vec_mergeh((vec_double2)x13.val, (vec_double2)t13.val)); // x1, x3 = r1 i1 r3 i3
+                    w23 = v_float32x4((vec_float4)vec_mergeh((vec_double2)w23.val, (vec_double2)t23.val)); // w2, w3 = wr2 wi2 wr3 wi3
+
+                    t0 = v_float32x4(vec_perm(x13.val, x13.val, permute_vector5)) * w23;
+                    t1 = v_float32x4(vec_perm(x13.val, x13.val, permute_vector6)) * (v_float32x4)(vec_perm(w23.val, w23.val, permute_vector2));
+                    x13 = v_muladd(t1, v1m1, t0);
+                    // re(x1*w2), im(x1*w2), re(x3*w3), im(x3*w3)
+                    t02 = v_load((const float *)&v1[0]);
+                    x02 = v_float32x4((vec_float4)vec_permi((vec_double2)t02.val, (vec_double2)x02.val, 1)); // x2 = r2 i2
+                    t01 = v_load((const float *)&wave[dw]);
+                    w01 = v_float32x4((vec_float4)vec_permi((vec_double2)t01.val, (vec_double2)w01.val, 1)); // w1 = wr1 wi1
+                    x02 = v_float32x4(vec_perm(x02.val, x02.val, permute_vector3));
+                    w01 = v_float32x4(vec_perm(w01.val, w01.val, permute_vector4));
+                    x02 = x02 * w01;
+                    x02 = v_muladd(v_combine_low(x02, x02), v1m1, x02);
+                    // re(x0) im(x0) re(x2*w1), im(x2*w1)
+                    t02 = v_load((const float *)&v0[0]);
+                    x02 = v_float32x4((vec_float4)vec_permi((vec_double2)t02.val, (vec_double2)x02.val, 1));
+
+                    y01 = x02 + x13;
+                    y23 = x02 - x13;
+                    t1 = (v_float32x4)(vec_perm(y01.val, y23.val, permute_vector1)) ^ neg3_mask;
+                    t0 = v_combine_low(y01, y23);
+                    y01 = t0 + t1;
+                    y23 = t0 - t1;
+
+                    vec_st_l8(y01.val, (float *)&v0[0]);
+                    vec_st_h8(y01.val, (float *)&v0[nx]);
+                    vec_st_l8(y23.val, (float *)&v1[0]);
+                    vec_st_h8(y23.val, (float *)&v1[nx]);
+                }
+            }
+        }
+
+        _dw0 = dw0;
+        return n;
+    }
+};
+
 #endif
 
 #ifdef USE_IPP_DFT
@@ -537,7 +637,11 @@ struct OcvDftOptions {
     bool noPermute;
     bool isComplex;
 
+#if CV_SSE3
     bool haveSSE3;
+#elif CV_VSX
+    bool haveVSX;
+#endif
 
     DFTFunc dft_func;
     bool useIpp;
@@ -565,7 +669,9 @@ struct OcvDftOptions {
         ipp_work = 0;
 #endif
         dft_func = 0;
+
         haveSSE3 = checkHardwareSupport(CV_CPU_SSE3);
+        haveVSX = checkHardwareSupport(CV_CPU_VSX);
     }
 };
 
@@ -707,7 +813,7 @@ DFT(const OcvDftOptions & c, const Complex<T>* src, Complex<T>* dst)
     // 1. power-2 transforms
     if( (c.factors[0] & 1) == 0 )
     {
-        if( c.factors[0] >= 4 && c.haveSSE3)
+        if( c.factors[0] >= 4 && (c.haveSSE3 || c.haveVSX) )
         {
             DFT_VecR4<T> vr4;
             n = vr4(dst, c.factors[0], c.n, dw0, wave);

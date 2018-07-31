@@ -86,7 +86,7 @@
 
 
 #include "precomp.hpp"
-
+#include "opencv2/core/hal/intrin.hpp"
 #include <limits>
 
 #define  CV_DESCALE(x,n)     (((x) + (1 << ((n)-1))) >> (n))
@@ -538,6 +538,274 @@ public:
         return 0;
     }
 };
+
+#elif CV_VSX
+
+class SIMDBayerInterpolator_8u
+{
+public:
+    SIMDBayerInterpolator_8u()
+    {
+        use_simd = checkHardwareSupport(CV_CPU_VSX);
+    }
+
+    int bayer2Gray(const uchar* bayer, int bayer_step, uchar* dst,
+                   int width, int bcoeff, int gcoeff, int rcoeff) const
+    {
+        if( !use_simd )
+            return 0;
+
+        v_uint16x8 _b2y = v_setall_u16((unsigned short)(rcoeff*2));
+        v_uint16x8 _g2y = v_setall_u16((unsigned short)(gcoeff*2));
+        v_uint16x8 _r2y = v_setall_u16((unsigned short)(bcoeff*2));
+        v_uint16x8 z = v_setzero_u16();
+        const uchar* bayer_end = bayer + width;
+
+        for( ; bayer <= bayer_end - 18; bayer += 14, dst += 14 )
+        {
+            v_uint16x8 r0 = v_load((ushort*)bayer);
+            v_uint16x8 r1 = v_load((ushort*)(bayer+bayer_step));
+            v_uint16x8 r2 = v_load((ushort*)(bayer+bayer_step*2));
+
+            v_uint16x8 b1 = ((r0 << 8) >> 7) + ((r2 << 8) >> 7);
+
+            v_uint16x8 b0 = b1 + v_rotate_right_byte<2>(b1);
+
+            b1 = v_rotate_right_byte<2>(b1) << 1;
+
+            v_uint16x8 g0 = (r0 >> 7) + (r2 >> 7);
+            v_uint16x8 g1 = (r1 << 8) >> 7;
+            g0 = g0 + (g1 + v_rotate_right_byte<2>(g1));
+            g1 = v_rotate_right_byte<2>(g1) << 2;
+
+            r0 = r1 >> 8;
+            r1 = (r0 + v_rotate_right_byte<2>(r0)) << 2;
+            r0 = r0 << 3;
+
+            /* _mm_mulhi_epi16() can map to vec_mradds(a,b,0) */
+            g0 = v_uint16x8(vec_mul_hi(b0.val, _b2y.val)) + v_uint16x8(vec_mul_hi(g0.val, _g2y.val));
+            v_uint16x8 tmp1 = v_uint16x8(vec_mul_hi(b1.val, _b2y.val));
+            v_uint16x8 tmp2 = v_uint16x8(vec_mul_hi(g1.val, _g2y.val));
+            g1 = v_uint16x8(vec_mul_hi(b1.val, _b2y.val)) + v_uint16x8(vec_mul_hi(g1.val, _g2y.val));
+            g0 = g0 + v_uint16x8(vec_mul_hi(r0.val, _r2y.val));
+            g1 = g1 + v_uint16x8(vec_mul_hi(r1.val, _r2y.val));
+            g0 = g0 >> 2;
+            g1 = g1 >> 2;
+            g0 = v_uint16x8((vec_ushort8)v_pack(g0, g0).val);
+            g1 = v_uint16x8((vec_ushort8)v_pack(g1, g1).val);
+            g0 = (v_uint16x8)((vec_ushort8)v_combine_interleave_low((v_uint8x16)((vec_uchar16)g0.val), (v_uint8x16)((vec_uchar16)g1.val)).val);
+            v_store((ushort*)dst, g0);
+        }
+
+        return (int)(bayer - (bayer_end - width));
+    }
+
+    int bayer2RGB(const uchar* bayer, int bayer_step, uchar* dst, int width, int blue) const
+    {
+        if( !use_simd )
+            return 0;
+        /*
+         B G B G | B G B G | B G B G | B G B G
+         G R G R | G R G R | G R G R | G R G R
+         B G B G | B G B G | B G B G | B G B G
+         */
+
+        v_uint16x8 delta1 = v_setall_u16(1);
+        v_uint16x8 delta2 = v_setall_u16(2);
+        v_uint16x8 mask = v_setall_u16(blue < 0 ? -1 : 0);
+        v_uint16x8 z = v_setzero_u16();
+
+        v_uint16x8 masklo = v_setall_u16(0x00ff);
+        const uchar* bayer_end = bayer + width;
+
+        for( ; bayer <= bayer_end - 18; bayer += 14, dst += 42 )
+        {
+            v_uint16x8 r0 = v_load((ushort*)bayer);
+            v_uint16x8 r1 = v_load((ushort*)(bayer + bayer_step));
+            v_uint16x8 r2 = v_load((ushort*)(bayer + bayer_step*2));
+
+            v_uint16x8 b1 = (r0 & masklo) + (r2 & masklo);
+
+            v_uint16x8 nextb1 = v_rotate_right_byte<2>(b1);
+            v_uint16x8 b0 = (b1 + nextb1);
+            b1 = (nextb1 + delta1) >>  1;
+            b0 = (b0 + delta2) >> 2;
+            // b0 b2 ... b14 b1 b3 ... b15
+            b0 = v_uint16x8((vec_ushort8)v_pack(b0, b1).val);
+
+            v_uint16x8 g0 = (r0 >> 8) +  (r2 >> 8);
+            v_uint16x8 g1 = r1 & masklo;
+            g0 = g0 + (g1 + v_rotate_right_byte<2>(g1));
+            g1 = v_rotate_right_byte<2>(g1);
+            g0 = (g0 + delta2) >> 2;
+            // g0 g2 ... g14 g1 g3 ... g15
+            g0 = v_uint16x8((vec_ushort8)v_pack(g0, g1).val);
+
+            r0 = (r1 >> 8);
+            r1 = (r0 + v_rotate_right_byte<2>(r0));
+            r1 = (r1 + delta1) >> 1;
+            // r0 r2 ... r14 r1 r3 ... r15
+            r0 = v_uint16x8((vec_ushort8)v_pack(r0, r1).val);
+
+            b1 = ((b0 ^ r0) & mask);
+            b0 = (b0 ^ b1);
+            r0 = (r0 ^ b1);
+
+            // b1 g1 b3 g3 b5 g5...
+            b1 = (v_uint16x8)((vec_ushort8)v_combine_interleave_high((v_uint8x16)((vec_uchar16)b0.val), (v_uint8x16)((vec_uchar16)g0.val)).val);
+            // b0 g0 b2 g2 b4 g4 ....
+            b0 = (v_uint16x8)((vec_ushort8)v_combine_interleave_low((v_uint8x16)((vec_uchar16)b0.val), (v_uint8x16)((vec_uchar16)g0.val)).val);
+
+            // r1 0 r3 0 r5 0 ...
+            r1 = (v_uint16x8)((vec_ushort8)v_combine_interleave_high((v_uint8x16)((vec_uchar16)r0.val), (v_uint8x16)((vec_uchar16)z.val)).val);
+            // r0 0 r2 0 r4 0 ...
+            r0 = (v_uint16x8)((vec_ushort8)v_combine_interleave_low((v_uint8x16)((vec_uchar16)r0.val), (v_uint8x16)((vec_uchar16)z.val)).val);
+
+            // 0 b0 g0 r0 0 b2 g2 r2 ...
+            g0 = v_rotate_left_byte<1>(v_combine_interleave_low(b0, r0));
+            // 0 b8 g8 r8 0 b10 g10 r10 ...
+            g1 = v_rotate_left_byte<1>(v_combine_interleave_high(b0, r0));
+
+            // b1 g1 r1 0 b3 g3 r3 0 ...
+            r0 = v_combine_interleave_low(b1, r1);
+            // b9 g9 r9 0 b11 g11 r11 0 ...
+            r1 = v_combine_interleave_high(b1, r1);
+
+            // 0 b0 g0 r0 b1 g1 r1 0 ...
+            b0 = (v_uint16x8)((vec_ushort8)v_rotate_right_byte<1>(v_combine_interleave_low((v_uint32x4)((vec_uint4)g0.val), (v_uint32x4)((vec_uint4)r0.val))).val);
+            // 0 b4 g4 r4 b5 g5 r5 0 ...
+            b1 = (v_uint16x8)((vec_ushort8)v_rotate_right_byte<1>(v_combine_interleave_high((v_uint32x4)((vec_uint4)g0.val), (v_uint32x4)((vec_uint4)r0.val))).val);
+
+            v_store_low((ushort*)(dst-1+0), b0);
+            v_store_low((ushort*)(dst-1+6*1), v_rotate_right_byte<8>(b0));
+            v_store_low((ushort*)(dst-1+6*2), b1);
+            v_store_low((ushort*)(dst-1+6*3), v_rotate_right_byte<8>(b1));
+
+            // 0 b8 g8 r8 b9 g9 r9 0 ...
+            g0 = (v_uint16x8)((vec_ushort8)v_rotate_right_byte<1>(v_combine_interleave_low((v_uint32x4)((vec_uint4)g1.val), (v_uint32x4)((vec_uint4)r1.val))).val);
+            // 0 b12 g12 r12 b13 g13 r13 0 ...
+            g1 = (v_uint16x8)((vec_ushort8)v_rotate_right_byte<1>(v_combine_interleave_high((v_uint32x4)((vec_uint4)g1.val), (v_uint32x4)((vec_uint4)r1.val))).val);
+
+            v_store_low((ushort*)(dst-1+6*4), g0);
+            v_store_low((ushort*)(dst-1+6*5), v_rotate_right_byte<8>(g0));
+            v_store_low((ushort*)(dst-1+6*6), g1);
+        }
+
+        return (int)(bayer - (bayer_end - width));
+    }
+
+    int bayer2RGBA(const uchar*, int, uchar*, int, int) const
+    {
+        return 0;
+    }
+
+    int bayer2RGB_EA(const uchar* bayer, int bayer_step, uchar* dst, int width, int blue) const
+    {
+        if (!use_simd)
+            return 0;
+
+        const uchar* bayer_end = bayer + width;
+        v_uint16x8 masklow = v_setall_u16(0x00ff);
+        v_uint16x8 delta1 = v_setall_u16(1), delta2 = v_setall_u16(2);
+        v_uint16x8 full = v_setall_u16((ushort)-1), z = v_setzero_u16();
+        v_uint16x8 mask = v_setall_u16(blue > 0 ? -1 : 0);
+
+        for ( ; bayer <= bayer_end - 18; bayer += 14, dst += 42)
+        {
+            /*
+             B G B G | B G B G | B G B G | B G B G
+             G R G R | G R G R | G R G R | G R G R
+             B G B G | B G B G | B G B G | B G B G
+             */
+
+            v_uint16x8 r0 = v_load((ushort*)bayer);
+            v_uint16x8 r1 = v_load((ushort*)(bayer+bayer_step));
+            v_uint16x8 r2 = v_load((ushort*)(bayer+bayer_step*2));
+
+            v_uint16x8 b1 = (r0 & masklow) +  (r2 & masklow);
+            v_uint16x8 nextb1 = v_rotate_right_byte<2>(b1);
+            v_uint16x8 b0 = (b1 + nextb1);
+            b1 = (nextb1 + delta1) >> 1;
+            b0 = (b0 + delta2) >> 2;
+            // b0 b2 ... b14 b1 b3 ... b15
+            b0 = v_uint16x8((vec_ushort8)v_pack(b0, b1).val);
+
+            // vertical sum
+            v_uint16x8 r0g = (r0 >> 8);
+            v_uint16x8 r2g = (r2 >> 8);
+            v_uint16x8 sumv = ((r0g + r2g) + delta1) >> 1;
+            // gorizontal sum
+            v_uint16x8 g1 = (masklow & r1);
+            v_uint16x8 nextg1 = v_rotate_right_byte<2>(g1);
+            v_uint16x8 sumg = (((g1 + nextg1) + delta1) >> 1);
+
+            // gradients
+            v_uint16x8 gradv = ((r0g - r2g) + (r2g - r0g));
+            v_uint16x8 gradg = ((nextg1 - g1) + (g1 - nextg1));
+            v_uint16x8 gmask = (gradg > gradv);
+
+            v_uint16x8 g0 = ((gmask & sumv) + (sumg & (gmask ^ full)));
+            // g0 g2 ... g14 g1 g3 ...
+            g0 = v_uint16x8((vec_ushort8)v_pack(g0, nextg1).val);
+
+            r0 = (r1 >> 8);
+            r1 = (r0 + v_rotate_right_byte<2>(r0));
+            r1 = ((r1 + delta1) >> 1);
+            // r0 r2 ... r14 r1 r3 ... r15
+            r0 = v_uint16x8((vec_ushort8)v_pack(r0, r1).val);
+
+            b1 = ((b0 ^ r0) & mask);
+            b0 = (b0 ^ b1);
+            r0 = (r0 ^ b1);
+
+            // b1 g1 b3 g3 b5 g5...
+            b1 = (v_uint16x8)((vec_ushort8)v_combine_interleave_high((v_uint8x16)((vec_uchar16)b0.val), (v_uint8x16)((vec_uchar16)g0.val)).val);
+            // b0 g0 b2 g2 b4 g4 ....
+            b0 = (v_uint16x8)((vec_ushort8)v_combine_interleave_low((v_uint8x16)((vec_uchar16)b0.val), (v_uint8x16)((vec_uchar16)g0.val)).val);
+
+            // r1 0 r3 0 r5 0 ...
+            r1 = (v_uint16x8)((vec_ushort8)v_combine_interleave_high((v_uint8x16)((vec_uchar16)r0.val), (v_uint8x16)((vec_uchar16)z.val)).val);
+            // r0 0 r2 0 r4 0 ...
+            r0 = (v_uint16x8)((vec_ushort8)v_combine_interleave_low((v_uint8x16)((vec_uchar16)r0.val), (v_uint8x16)((vec_uchar16)z.val)).val);
+
+            // 0 b0 g0 r0 0 b2 g2 r2 ...
+            g0 = v_rotate_left_byte<1>(v_combine_interleave_low(b0, r0));
+            // 0 b8 g8 r8 0 b10 g10 r10 ...
+            g1 = v_rotate_left_byte<1>(v_combine_interleave_high(b0, r0));
+
+            // b1 g1 r1 0 b3 g3 r3 0 ...
+            r0 = v_combine_interleave_low(b1, r1);
+            // b9 g9 r9 0 b11 g11 r11 0 ...
+            r1 = v_combine_interleave_high(b1, r1);
+
+            // 0 b0 g0 r0 b1 g1 r1 0 ...
+            b0 = (v_uint16x8)((vec_ushort8)v_rotate_right_byte<1>(v_combine_interleave_low((v_uint32x4)((vec_uint4)g0.val), (v_uint32x4)((vec_uint4)r0.val))).val);
+            // 0 b4 g4 r4 b5 g5 r5 0 ...
+            b1 = (v_uint16x8)((vec_ushort8)v_rotate_right_byte<1>(v_combine_interleave_high((v_uint32x4)((vec_uint4)g0.val), (v_uint32x4)((vec_uint4)r0.val))).val);
+
+            v_store_low((ushort*)(dst+0), b0);
+            v_store_low((ushort*)(dst+6*1), v_rotate_right_byte<8>(b0));
+            v_store_low((ushort*)(dst+6*2), b1);
+            v_store_low((ushort*)(dst+6*3), v_rotate_right_byte<8>(b1));
+
+            // 0 b8 g8 r8 b9 g9 r9 0 ...
+            g0 = (v_uint16x8)((vec_ushort8)v_rotate_right_byte<1>(v_combine_interleave_low((v_uint32x4)((vec_uint4)g1.val), (v_uint32x4)((vec_uint4)r1.val))).val);
+            // 0 b12 g12 r12 b13 g13 r13 0 ...
+            g1 = (v_uint16x8)((vec_ushort8)v_rotate_right_byte<1>(v_combine_interleave_high((v_uint32x4)((vec_uint4)g1.val), (v_uint32x4)((vec_uint4)r1.val))).val);
+
+            v_store_low((ushort*)(ushort*)(dst+6*4), g0);
+            v_store_low((ushort*)(dst+6*5), v_rotate_right_byte<8>(g0));
+
+            v_store_low((ushort*)(dst+6*6), g1);
+
+        }
+
+        return int(bayer - (bayer_end - width));
+    }
+
+    bool use_simd;
+};
+
 #else
 typedef SIMDBayerStubInterpolator_<uchar> SIMDBayerInterpolator_8u;
 #endif

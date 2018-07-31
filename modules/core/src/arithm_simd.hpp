@@ -49,14 +49,14 @@ namespace cv {
 
 struct NOP {};
 
-#if CV_SSE2 || CV_NEON
+#if CV_SSE2 || CV_NEON || CV_VSX
 #define IF_SIMD(op) op
 #else
 #define IF_SIMD(op) NOP
 #endif
 
 
-#if CV_SSE2 || CV_NEON
+#if CV_SSE2 || CV_NEON || CV_VSX
 
 #define FUNCTOR_TEMPLATE(name)          \
     template<typename T> struct name {}
@@ -448,6 +448,103 @@ FUNCTOR_TEMPLATE(VNot);
 FUNCTOR_CLOSURE_1arg(VNot, uchar, vmvnq_u8(a   ));
 #endif
 
+#if CV_VSX
+
+#define FUNCTOR_LOADSTORE(name, template_arg, register_type, load_body, store_body)\
+    template <>                                                                    \
+    struct name<template_arg>{                                                     \
+        typedef register_type reg_type;                                            \
+        static reg_type load(const template_arg * p) { return load_body (0, p);};  \
+        static void store(template_arg * p, reg_type v) { store_body (v, 0, p);};  \
+    }
+
+#define FUNCTOR_CLOSURE_2arg(name, template_arg, body)\
+    template<>                                                         \
+    struct name<template_arg>                                          \
+    {                                                                  \
+        VLoadStore128<template_arg>::reg_type operator()(              \
+                        VLoadStore128<template_arg>::reg_type a,       \
+                        VLoadStore128<template_arg>::reg_type b) const \
+        {                                                              \
+            return body;                                               \
+        };                                                             \
+    }
+
+#define FUNCTOR_CLOSURE_1arg(name, template_arg, body)\
+    template<>                                                         \
+    struct name<template_arg>                                          \
+    {                                                                  \
+        VLoadStore128<template_arg>::reg_type operator()(              \
+                        VLoadStore128<template_arg>::reg_type a,       \
+                        VLoadStore128<template_arg>::reg_type  ) const \
+        {                                                              \
+            return body;                                               \
+        };                                                             \
+    }
+
+FUNCTOR_LOADSTORE(VLoadStore128,  uchar, vec_uchar16, vsx_ld, vsx_st);
+FUNCTOR_LOADSTORE(VLoadStore128,  schar, vec_char16,  vsx_ld, vsx_st);
+FUNCTOR_LOADSTORE(VLoadStore128, ushort, vec_ushort8, vsx_ld, vsx_st);
+FUNCTOR_LOADSTORE(VLoadStore128,  short, vec_short8,  vsx_ld, vsx_st);
+FUNCTOR_LOADSTORE(VLoadStore128,   uint, vec_uint4,   vsx_ld, vsx_st);
+FUNCTOR_LOADSTORE(VLoadStore128,    int, vec_int4,    vsx_ld, vsx_st);
+FUNCTOR_LOADSTORE(VLoadStore128,  float, vec_float4,  vsx_ld, vsx_st);
+FUNCTOR_LOADSTORE(VLoadStore128, double, vec_double2, vsx_ld, vsx_st);
+
+FUNCTOR_TEMPLATE(VAdd);
+FUNCTOR_CLOSURE_2arg(VAdd,  uchar, vec_adds(a, b));
+FUNCTOR_CLOSURE_2arg(VAdd,  schar, vec_adds(a, b));
+FUNCTOR_CLOSURE_2arg(VAdd, ushort, vec_adds(a, b));
+FUNCTOR_CLOSURE_2arg(VAdd,  short, vec_adds(a, b));
+FUNCTOR_CLOSURE_2arg(VAdd,    int, vec_add(a, b));
+FUNCTOR_CLOSURE_2arg(VAdd,  float, vec_add(a, b));
+FUNCTOR_CLOSURE_2arg(VAdd, double, vec_add(a, b));
+
+FUNCTOR_TEMPLATE(VSub);
+FUNCTOR_CLOSURE_2arg(VSub,  uchar, vec_subs(a, b));
+FUNCTOR_CLOSURE_2arg(VSub,  schar, vec_subs(a, b));
+FUNCTOR_CLOSURE_2arg(VSub, ushort, vec_subs(a, b));
+FUNCTOR_CLOSURE_2arg(VSub,  short, vec_subs(a, b));
+FUNCTOR_CLOSURE_2arg(VSub,    int, vec_sub(a, b));
+FUNCTOR_CLOSURE_2arg(VSub,  float, vec_sub(a, b));
+FUNCTOR_CLOSURE_2arg(VSub, double, vec_sub(a, b));
+
+FUNCTOR_TEMPLATE(VMin);
+FUNCTOR_CLOSURE_2arg(VMin,  uchar, vec_min(a, b));
+FUNCTOR_CLOSURE_2arg(VMin,  schar, vec_min(a, b));
+FUNCTOR_CLOSURE_2arg(VMin, ushort, vec_min(a, b));
+FUNCTOR_CLOSURE_2arg(VMin,  short, vec_min(a, b));
+FUNCTOR_CLOSURE_2arg(VMin,    int, vec_min(a, b));
+FUNCTOR_CLOSURE_2arg(VMin,  float, vec_min(a, b));
+FUNCTOR_CLOSURE_2arg(VMin, double, vec_min(a, b));
+
+FUNCTOR_TEMPLATE(VMax);
+FUNCTOR_CLOSURE_2arg(VMax,  uchar, vec_max(a, b));
+FUNCTOR_CLOSURE_2arg(VMax,  schar, vec_max(a, b));
+FUNCTOR_CLOSURE_2arg(VMax, ushort, vec_max(a, b));
+FUNCTOR_CLOSURE_2arg(VMax,  short, vec_max(a, b));
+FUNCTOR_CLOSURE_2arg(VMax,    int, vec_max(a, b));
+FUNCTOR_CLOSURE_2arg(VMax,  float, vec_max(a, b));
+FUNCTOR_CLOSURE_2arg(VMax, double, vec_max(a, b));
+
+FUNCTOR_TEMPLATE(VAbsDiff);
+FUNCTOR_CLOSURE_2arg(VAbsDiff,  uchar, vec_absds(a, b));
+FUNCTOR_CLOSURE_2arg(VAbsDiff,  schar, vec_absds(a, b));
+FUNCTOR_CLOSURE_2arg(VAbsDiff, ushort, vec_absds(a, b));
+FUNCTOR_CLOSURE_2arg(VAbsDiff,  short, vec_absds(a, b));
+FUNCTOR_CLOSURE_2arg(VAbsDiff,    int, vec_absd(a, b));
+FUNCTOR_CLOSURE_2arg(VAbsDiff,  float, vec_absd(a, b));
+FUNCTOR_CLOSURE_2arg(VAbsDiff, double, vec_absd(a, b));
+
+FUNCTOR_TEMPLATE(VAnd);
+FUNCTOR_CLOSURE_2arg(VAnd, uchar, vec_and(a, b));
+FUNCTOR_TEMPLATE(VOr);
+FUNCTOR_CLOSURE_2arg(VOr , uchar, vec_or (a, b));
+FUNCTOR_TEMPLATE(VXor);
+FUNCTOR_CLOSURE_2arg(VXor, uchar, vec_xor(a, b));
+FUNCTOR_TEMPLATE(VNot);
+FUNCTOR_CLOSURE_1arg(VNot, uchar, vec_not(a   ));
+#endif
 
 template <typename T>
 struct Cmp_SIMD
@@ -778,8 +875,257 @@ struct Cmp_SIMD<int>
     bool haveSSE;
 };
 
-#endif
+#elif CV_VSX
 
+template <>
+struct Cmp_SIMD<schar>
+{
+    explicit Cmp_SIMD(int code_) :
+        code(code_)
+    {
+        // CV_Assert(code == CMP_GT || code == CMP_LE ||
+        //           code == CMP_EQ || code == CMP_NE);
+
+        v_mask = v_setall_u8(255);
+    }
+
+    int operator () (const schar * src1, const schar * src2, uchar * dst, int width) const
+    {
+        int x = 0;
+
+        if (code == CMP_GT)
+            for ( ; x <= width - 16; x += 16)
+                v_store(dst + x, v_reinterpret_as_u8(v_load(src1 + x) > v_load(src2 + x)));
+        else if (code == CMP_LE)
+            for ( ; x <= width - 16; x += 16)
+                v_store(dst + x, v_mask ^ v_reinterpret_as_u8(v_load(src1 + x) > v_load(src2 + x)));
+        else if (code == CMP_EQ)
+            for ( ; x <= width - 16; x += 16)
+                v_store(dst + x, v_reinterpret_as_u8(v_load(src1 + x) == v_load(src2 + x)));
+        else if (code == CMP_NE)
+            for ( ; x <= width - 16; x += 16)
+                v_store(dst + x, v_mask ^ v_reinterpret_as_u8(v_load(src1 + x) == v_load(src2 + x)));
+
+        return x;
+    }
+
+    int code;
+    v_uint8x16 v_mask;
+};
+
+template <>
+struct Cmp_SIMD<ushort>
+{
+    explicit Cmp_SIMD(int code_) :
+        code(code_)
+    {
+        // CV_Assert(code == CMP_GT || code == CMP_LE ||
+        //           code == CMP_EQ || code == CMP_NE);
+
+        v_mask = v_setall_u8(255);
+    }
+
+    int operator () (const ushort * src1, const ushort * src2, uchar * dst, int width) const
+    {
+        int x = 0;
+
+        if (code == CMP_GT)
+            for ( ; x <= width - 16; x += 16)
+            {
+                v_uint16x8 v_dst0 = v_reinterpret_as_u16(v_load(src1 + x) > v_load(src2 + x));
+                v_uint16x8 v_dst1 = v_reinterpret_as_u16(v_load(src1 + x + 8) > v_load(src2 + x + 8));
+
+                v_uint8x16 v_dst = v_pack(v_dst0, v_dst1);
+                v_store(dst + x, v_dst);
+            }
+        else if (code == CMP_LE)
+            for ( ; x <= width - 16; x += 16)
+            {
+                v_uint16x8 v_dst0 = v_reinterpret_as_u16(v_load(src1 + x) > v_load(src2 + x));
+                v_uint16x8 v_dst1 = v_reinterpret_as_u16(v_load(src1 + x + 8) > v_load(src2 + x + 8));
+
+                v_uint8x16 v_dst = v_pack(v_dst0, v_dst1);
+                v_store(dst + x, v_mask ^ v_dst);
+            }
+        else if (code == CMP_EQ)
+            for ( ; x <= width - 16; x += 16)
+            {
+                v_uint16x8 v_dst0 = v_reinterpret_as_u16(v_load(src1 + x) == v_load(src2 + x));
+                v_uint16x8 v_dst1 = v_reinterpret_as_u16(v_load(src1 + x + 8) == v_load(src2 + x + 8));
+
+                v_uint8x16 v_dst = v_pack(v_dst0, v_dst1);
+                v_store(dst + x, v_dst);
+            }
+        else if (code == CMP_NE)
+            for ( ; x <= width - 16; x += 16)
+            {
+                v_uint16x8 v_dst0 = v_reinterpret_as_u16(v_load(src1 + x) == v_load(src2 + x));
+                v_uint16x8 v_dst1 = v_reinterpret_as_u16(v_load(src1 + x + 8) == v_load(src2 + x + 8));
+
+                v_uint8x16 v_dst = v_pack(v_dst0, v_dst1);
+                v_store(dst + x, v_mask ^ v_dst);
+            }
+
+        return x;
+    }
+
+    int code;
+    v_uint8x16 v_mask;
+};
+
+template <>
+struct Cmp_SIMD<int>
+{
+    explicit Cmp_SIMD(int code_) :
+        code(code_)
+    {
+        // CV_Assert(code == CMP_GT || code == CMP_LE ||
+        //           code == CMP_EQ || code == CMP_NE);
+
+        v_mask = v_setall_u8(255);
+    }
+
+    int operator () (const int * src1, const int * src2, uchar * dst, int width) const
+    {
+        int x = 0;
+
+        if (code == CMP_GT)
+            for ( ; x <= width - 16; x += 16)
+            {
+                v_uint32x4 v_dst0 = v_reinterpret_as_u32(v_load(src1 + x) > v_load(src2 + x));
+                v_uint32x4 v_dst1 = v_reinterpret_as_u32(v_load(src1 + x + 4) > v_load(src2 + x + 4));
+                v_uint32x4 v_dst2 = v_reinterpret_as_u32(v_load(src1 + x + 8) > v_load(src2 + x + 8));
+                v_uint32x4 v_dst3 = v_reinterpret_as_u32(v_load(src1 + x + 12) > v_load(src2 + x + 12));
+
+                v_uint16x8 v_dsth = v_pack(v_dst0, v_dst1);
+                v_uint16x8 v_dstl = v_pack(v_dst2, v_dst3);
+                v_uint8x16 v_dst = v_pack(v_dsth, v_dstl);
+                v_store(dst + x, v_dst);
+            }
+        else if (code == CMP_LE)
+            for ( ; x <= width - 16; x += 16)
+            {
+                v_uint32x4 v_dst0 = v_reinterpret_as_u32(v_load(src1 + x) > v_load(src2 + x));
+                v_uint32x4 v_dst1 = v_reinterpret_as_u32(v_load(src1 + x + 4) > v_load(src2 + x + 4));
+                v_uint32x4 v_dst2 = v_reinterpret_as_u32(v_load(src1 + x + 8) > v_load(src2 + x + 8));
+                v_uint32x4 v_dst3 = v_reinterpret_as_u32(v_load(src1 + x + 12) > v_load(src2 + x + 12));
+
+                v_uint16x8 v_dsth = v_pack(v_dst0, v_dst1);
+                v_uint16x8 v_dstl = v_pack(v_dst2, v_dst3);
+                v_uint8x16 v_dst = v_pack(v_dsth, v_dstl);
+                v_store(dst + x, v_mask ^ v_dst);
+            }
+        else if (code == CMP_EQ)
+            for ( ; x <= width - 16; x += 16)
+            {
+                v_uint32x4 v_dst0 = v_reinterpret_as_u32(v_load(src1 + x) == v_load(src2 + x));
+                v_uint32x4 v_dst1 = v_reinterpret_as_u32(v_load(src1 + x + 4) == v_load(src2 + x + 4));
+                v_uint32x4 v_dst2 = v_reinterpret_as_u32(v_load(src1 + x + 8) == v_load(src2 + x + 8));
+                v_uint32x4 v_dst3 = v_reinterpret_as_u32(v_load(src1 + x + 12) == v_load(src2 + x + 12));
+
+                v_uint16x8 v_dsth = v_pack(v_dst0, v_dst1);
+                v_uint16x8 v_dstl = v_pack(v_dst2, v_dst3);
+                v_uint8x16 v_dst = v_pack(v_dsth, v_dstl);
+                v_store(dst + x, v_dst);
+            }
+        else if (code == CMP_NE)
+            for ( ; x <= width - 16; x += 16)
+            {
+                v_uint32x4 v_dst0 = v_reinterpret_as_u32(v_load(src1 + x) == v_load(src2 + x));
+                v_uint32x4 v_dst1 = v_reinterpret_as_u32(v_load(src1 + x + 4) == v_load(src2 + x + 4));
+                v_uint32x4 v_dst2 = v_reinterpret_as_u32(v_load(src1 + x + 8) == v_load(src2 + x + 8));
+                v_uint32x4 v_dst3 = v_reinterpret_as_u32(v_load(src1 + x + 12) == v_load(src2 + x + 12));
+
+                v_uint16x8 v_dsth = v_pack(v_dst0, v_dst1);
+                v_uint16x8 v_dstl = v_pack(v_dst2, v_dst3);
+                v_uint8x16 v_dst = v_pack(v_dsth, v_dstl);
+                v_store(dst + x, v_mask ^ v_dst);
+            }
+
+        return x;
+    }
+
+    int code;
+    v_uint8x16 v_mask;
+};
+
+template <>
+struct Cmp_SIMD<float>
+{
+    explicit Cmp_SIMD(int code_) :
+        code(code_)
+    {
+        // CV_Assert(code == CMP_GT || code == CMP_LE ||
+        //           code == CMP_EQ || code == CMP_NE);
+
+        v_mask = v_setall_u8(255);
+    }
+
+    int operator () (const float * src1, const float * src2, uchar * dst, int width) const
+    {
+        int x = 0;
+
+        if (code == CMP_GT)
+            for ( ; x <= width - 16; x += 16)
+            {
+                v_uint32x4 v_dst0 = v_reinterpret_as_u32(v_load(src1 + x) > v_load(src2 + x));
+                v_uint32x4 v_dst1 = v_reinterpret_as_u32(v_load(src1 + x + 4) > v_load(src2 + x + 4));
+                v_uint32x4 v_dst2 = v_reinterpret_as_u32(v_load(src1 + x + 8) > v_load(src2 + x + 8));
+                v_uint32x4 v_dst3 = v_reinterpret_as_u32(v_load(src1 + x + 12) > v_load(src2 + x + 12));
+
+                v_uint16x8 v_dsth = v_pack(v_dst0, v_dst1);
+                v_uint16x8 v_dstl = v_pack(v_dst2, v_dst3);
+                v_uint8x16 v_dst = v_pack(v_dsth, v_dstl);
+                v_store(dst + x, v_dst);
+            }
+        else if (code == CMP_LE)
+            for ( ; x <= width - 16; x += 16)
+            {
+                v_uint32x4 v_dst0 = v_reinterpret_as_u32(v_load(src1 + x) > v_load(src2 + x));
+                v_uint32x4 v_dst1 = v_reinterpret_as_u32(v_load(src1 + x + 4) > v_load(src2 + x + 4));
+                v_uint32x4 v_dst2 = v_reinterpret_as_u32(v_load(src1 + x + 8) > v_load(src2 + x + 8));
+                v_uint32x4 v_dst3 = v_reinterpret_as_u32(v_load(src1 + x + 12) > v_load(src2 + x + 12));
+
+                v_uint16x8 v_dsth = v_pack(v_dst0, v_dst1);
+                v_uint16x8 v_dstl = v_pack(v_dst2, v_dst3);
+                v_uint8x16 v_dst = v_pack(v_dsth, v_dstl);
+                v_store(dst + x, v_mask ^ v_dst);
+            }
+        else if (code == CMP_EQ)
+            for ( ; x <= width - 16; x += 16)
+            {
+                v_uint32x4 v_dst0 = v_reinterpret_as_u32(v_load(src1 + x) == v_load(src2 + x));
+                v_uint32x4 v_dst1 = v_reinterpret_as_u32(v_load(src1 + x + 4) == v_load(src2 + x + 4));
+                v_uint32x4 v_dst2 = v_reinterpret_as_u32(v_load(src1 + x + 8) == v_load(src2 + x + 8));
+                v_uint32x4 v_dst3 = v_reinterpret_as_u32(v_load(src1 + x + 12) == v_load(src2 + x + 12));
+
+                v_uint16x8 v_dsth = v_pack(v_dst0, v_dst1);
+                v_uint16x8 v_dstl = v_pack(v_dst2, v_dst3);
+                v_uint8x16 v_dst = v_pack(v_dsth, v_dstl);
+                v_store(dst + x, v_dst);
+            }
+        else if (code == CMP_NE)
+            for ( ; x <= width - 16; x += 16)
+            {
+                v_uint32x4 v_dst0 = v_reinterpret_as_u32(v_load(src1 + x) == v_load(src2 + x));
+                v_uint32x4 v_dst1 = v_reinterpret_as_u32(v_load(src1 + x + 4) == v_load(src2 + x + 4));
+                v_uint32x4 v_dst2 = v_reinterpret_as_u32(v_load(src1 + x + 8) == v_load(src2 + x + 8));
+                v_uint32x4 v_dst3 = v_reinterpret_as_u32(v_load(src1 + x + 12) == v_load(src2 + x + 12));
+
+                v_uint16x8 v_dsth = v_pack(v_dst0, v_dst1);
+                v_uint16x8 v_dstl = v_pack(v_dst2, v_dst3);
+                v_uint8x16 v_dst = v_pack(v_dsth, v_dstl);
+                v_store(dst + x, v_mask ^ v_dst);
+            }
+
+        return x;
+    }
+
+    int code;
+    v_uint8x16 v_mask;
+};
+
+#endif
 
 template <typename T, typename WT>
 struct Mul_SIMD
@@ -1168,6 +1514,232 @@ struct Mul_SIMD<short, float>
     }
 
     bool haveSSE;
+};
+
+#elif CV_VSX
+
+template <>
+struct Mul_SIMD<uchar, float>
+{
+    int operator() (const uchar * src1, const uchar * src2, uchar * dst, int width, float scale) const
+    {
+        int x = 0;
+
+        if( scale == 1.0f )
+            for ( ; x <= width - 16; x += 16)
+            {
+                v_uint8x16 v_src1 = v_load(src1 + x);
+                v_uint8x16 v_src2 = v_load(src2 + x);
+
+                v_uint16x8 v_src1h, v_src1l, v_src2h, v_src2l;
+                v_expand(v_src1, v_src1h, v_src1l);
+                v_expand(v_src2, v_src2h, v_src2l);
+                v_uint32x4 v_src11, v_src12, v_src13, v_src14, v_src21, v_src22, v_src23, v_src24;
+                v_expand(v_src1h, v_src11, v_src12);
+                v_expand(v_src1l, v_src13, v_src14);
+                v_expand(v_src2h, v_src21, v_src22);
+                v_expand(v_src2l, v_src23, v_src24);
+
+                v_float32x4 v_dst11 = v_cvt_f32(v_reinterpret_as_s32(v_src11)) * v_cvt_f32(v_reinterpret_as_s32(v_src21));
+                v_float32x4 v_dst12 = v_cvt_f32(v_reinterpret_as_s32(v_src12)) * v_cvt_f32(v_reinterpret_as_s32(v_src22));
+                v_float32x4 v_dst13 = v_cvt_f32(v_reinterpret_as_s32(v_src13)) * v_cvt_f32(v_reinterpret_as_s32(v_src23));
+                v_float32x4 v_dst14 = v_cvt_f32(v_reinterpret_as_s32(v_src14)) * v_cvt_f32(v_reinterpret_as_s32(v_src24));
+
+                v_uint16x8 v_dsth = v_pack_u(v_round(v_dst11), v_round(v_dst12));
+                v_uint16x8 v_dstl = v_pack_u(v_round(v_dst13), v_round(v_dst14));
+                v_uint8x16 v_dst = v_pack(v_dsth, v_dstl);
+                v_store(dst + x, v_dst);
+            }
+        else
+        {
+            v_float32x4 v_scale = v_setall_f32(scale);
+            for ( ; x <= width - 16; x += 16)
+            {
+                v_uint8x16 v_src1 = v_load(src1 + x);
+                v_uint8x16 v_src2 = v_load(src2 + x);
+
+                v_uint16x8 v_src1h, v_src1l, v_src2h, v_src2l;
+                v_expand(v_src1, v_src1h, v_src1l);
+                v_expand(v_src2, v_src2h, v_src2l);
+                v_uint32x4 v_src11, v_src12, v_src13, v_src14, v_src21, v_src22, v_src23, v_src24;
+                v_expand(v_src1h, v_src11, v_src12);
+                v_expand(v_src1l, v_src13, v_src14);
+                v_expand(v_src2h, v_src21, v_src22);
+                v_expand(v_src2l, v_src23, v_src24);
+
+                v_float32x4 v_dst11 = v_scale * v_cvt_f32(v_reinterpret_as_s32(v_src11)) * v_cvt_f32(v_reinterpret_as_s32(v_src21));
+                v_float32x4 v_dst12 = v_scale * v_cvt_f32(v_reinterpret_as_s32(v_src12)) * v_cvt_f32(v_reinterpret_as_s32(v_src22));
+                v_float32x4 v_dst13 = v_scale * v_cvt_f32(v_reinterpret_as_s32(v_src13)) * v_cvt_f32(v_reinterpret_as_s32(v_src23));
+                v_float32x4 v_dst14 = v_scale * v_cvt_f32(v_reinterpret_as_s32(v_src14)) * v_cvt_f32(v_reinterpret_as_s32(v_src24));
+
+                v_uint16x8 v_dsth = v_pack_u(v_round(v_dst11), v_round(v_dst12));
+                v_uint16x8 v_dstl = v_pack_u(v_round(v_dst13), v_round(v_dst14));
+                v_uint8x16 v_dst = v_pack(v_dsth, v_dstl);
+                v_store(dst + x, v_dst);
+            }
+        }
+
+        return x;
+    }
+};
+
+template <>
+struct Mul_SIMD<schar, float>
+{
+    int operator() (const schar * src1, const schar * src2, schar * dst, int width, float scale) const
+    {
+        int x = 0;
+
+        if( scale == 1.0f )
+            for ( ; x <= width - 16; x += 16)
+            {
+                v_int8x16 v_src1 = v_load(src1 + x);
+                v_int8x16 v_src2 = v_load(src2 + x);
+
+                v_int16x8 v_src1h, v_src1l, v_src2h, v_src2l;
+                v_expand(v_src1, v_src1h, v_src1l);
+                v_expand(v_src2, v_src2h, v_src2l);
+                v_int32x4 v_src11, v_src12, v_src13, v_src14, v_src21, v_src22, v_src23, v_src24;
+                v_expand(v_src1h, v_src11, v_src12);
+                v_expand(v_src1l, v_src13, v_src14);
+                v_expand(v_src2h, v_src21, v_src22);
+                v_expand(v_src2l, v_src23, v_src24);
+
+                v_float32x4 v_dst11 = v_cvt_f32(v_src11) * v_cvt_f32(v_src21);
+                v_float32x4 v_dst12 = v_cvt_f32(v_src12) * v_cvt_f32(v_src22);
+                v_float32x4 v_dst13 = v_cvt_f32(v_src13) * v_cvt_f32(v_src23);
+                v_float32x4 v_dst14 = v_cvt_f32(v_src14) * v_cvt_f32(v_src24);
+
+                v_int16x8 v_dsth = v_pack(v_round(v_dst11), v_round(v_dst12));
+                v_int16x8 v_dstl = v_pack(v_round(v_dst13), v_round(v_dst14));
+                v_int8x16 v_dst = v_pack(v_dsth, v_dstl);
+                v_store(dst + x, v_dst);
+            }
+        else
+        {
+            v_float32x4 v_scale = v_setall_f32(scale);
+            for ( ; x <= width - 16; x += 16)
+            {
+                v_int8x16 v_src1 = v_load(src1 + x);
+                v_int8x16 v_src2 = v_load(src2 + x);
+
+                v_int16x8 v_src1h, v_src1l, v_src2h, v_src2l;
+                v_expand(v_src1, v_src1h, v_src1l);
+                v_expand(v_src2, v_src2h, v_src2l);
+                v_int32x4 v_src11, v_src12, v_src13, v_src14, v_src21, v_src22, v_src23, v_src24;
+                v_expand(v_src1h, v_src11, v_src12);
+                v_expand(v_src1l, v_src13, v_src14);
+                v_expand(v_src2h, v_src21, v_src22);
+                v_expand(v_src2l, v_src23, v_src24);
+
+                v_float32x4 v_dst11 = v_scale * v_cvt_f32(v_src11) * v_cvt_f32(v_src21);
+                v_float32x4 v_dst12 = v_scale * v_cvt_f32(v_src12) * v_cvt_f32(v_src22);
+                v_float32x4 v_dst13 = v_scale * v_cvt_f32(v_src13) * v_cvt_f32(v_src23);
+                v_float32x4 v_dst14 = v_scale * v_cvt_f32(v_src14) * v_cvt_f32(v_src24);
+
+                v_int16x8 v_dsth = v_pack(v_round(v_dst11), v_round(v_dst12));
+                v_int16x8 v_dstl = v_pack(v_round(v_dst13), v_round(v_dst14));
+                v_int8x16 v_dst = v_pack(v_dsth, v_dstl);
+                v_store(dst + x, v_dst);
+            }
+        }
+
+        return x;
+    }
+};
+
+template <>
+struct Mul_SIMD<ushort, float>
+{
+    int operator() (const ushort * src1, const ushort * src2, ushort * dst, int width, float scale) const
+    {
+        int x = 0;
+
+        if( scale == 1.0f )
+            for ( ; x <= width - 8; x += 8)
+            {
+                v_uint16x8 v_src1 = v_load(src1 + x);
+                v_uint16x8 v_src2 = v_load(src2 + x);
+
+                v_uint32x4 v_src1h, v_src1l, v_src2h, v_src2l;
+                v_expand(v_src1, v_src1h, v_src1l);
+                v_expand(v_src2, v_src2h, v_src2l);
+
+                v_float32x4 v_dst1 = v_cvt_f32(v_reinterpret_as_s32(v_src1h)) * v_cvt_f32(v_reinterpret_as_s32(v_src2h));
+                v_float32x4 v_dst2 = v_cvt_f32(v_reinterpret_as_s32(v_src1l)) * v_cvt_f32(v_reinterpret_as_s32(v_src2l));
+
+                v_uint16x8 v_dst = v_pack_u(v_round(v_dst1), v_round(v_dst2));
+                v_store(dst + x, v_dst);
+            }
+        else
+        {
+            v_float32x4 v_scale = v_setall_f32(scale);
+            for ( ; x <= width - 8; x += 8)
+            {
+                v_uint16x8 v_src1 = v_load(src1 + x);
+                v_uint16x8 v_src2 = v_load(src2 + x);
+
+                v_uint32x4 v_src1h, v_src1l, v_src2h, v_src2l;
+                v_expand(v_src1, v_src1h, v_src1l);
+                v_expand(v_src2, v_src2h, v_src2l);
+
+                v_float32x4 v_dst1 = v_scale * v_cvt_f32(v_reinterpret_as_s32(v_src1h)) * v_cvt_f32(v_reinterpret_as_s32(v_src2h));
+                v_float32x4 v_dst2 = v_scale * v_cvt_f32(v_reinterpret_as_s32(v_src1l)) * v_cvt_f32(v_reinterpret_as_s32(v_src2l));
+
+                v_uint16x8 v_dst = v_pack_u(v_round(v_dst1), v_round(v_dst2));
+                v_store(dst + x, v_dst);
+            }
+        }
+
+        return x;
+    }
+};
+
+template <>
+struct Mul_SIMD<short, float>
+{
+    int operator() (const short * src1, const short * src2, short * dst, int width, float scale) const
+    {
+        int x = 0;
+
+        if( scale == 1.0f )
+            for ( ; x <= width - 8; x += 8)
+            {
+                v_int16x8 v_src1 = v_load(src1 + x);
+                v_int16x8 v_src2 = v_load(src2 + x);
+
+                v_int32x4 v_src1h, v_src1l, v_src2h, v_src2l;
+                v_expand(v_src1, v_src1h, v_src1l);
+                v_expand(v_src2, v_src2h, v_src2l);
+
+                v_float32x4 v_dst1 = v_cvt_f32(v_src1h) * v_cvt_f32(v_src2h);
+                v_float32x4 v_dst2 = v_cvt_f32(v_src1l) * v_cvt_f32(v_src2l);
+
+                v_int16x8 v_dst = v_pack(v_round(v_dst1), v_round(v_dst2));
+                v_store(dst + x, v_dst);
+            }
+        else
+        {
+            v_float32x4 v_scale = v_setall_f32(scale);
+            for ( ; x <= width - 8; x += 8)
+            {
+                v_int16x8 v_src1 = v_load(src1 + x);
+                v_int16x8 v_src2 = v_load(src2 + x);
+
+                v_int32x4 v_src1h, v_src1l, v_src2h, v_src2l;
+                v_expand(v_src1, v_src1h, v_src1l);
+                v_expand(v_src2, v_src2h, v_src2l);
+
+                v_float32x4 v_dst1 = v_scale * v_cvt_f32(v_src1h) * v_cvt_f32(v_src2h);
+                v_float32x4 v_dst2 = v_scale * v_cvt_f32(v_src1l) * v_cvt_f32(v_src2l);
+
+                v_int16x8 v_dst = v_pack(v_round(v_dst1), v_round(v_dst2));
+                v_store(dst + x, v_dst);
+            }
+        }
+
+        return x;
+    }
 };
 
 #endif
@@ -2012,6 +2584,104 @@ struct AddWeighted_SIMD<short, float>
             int16x4_t v_dst2 = vqmovn_s32(cv_vrndq_s32_f32(vaddq_f32(vaddq_f32(v_s1, v_s2), g)));
 
             vst1q_s16(dst + x, vcombine_s16(v_dst1, v_dst2));
+        }
+
+        return x;
+    }
+};
+
+#elif CV_VSX
+
+template <>
+struct AddWeighted_SIMD<schar, float>
+{
+    int operator() (const schar * src1, const schar * src2, schar * dst, int width, float alpha, float beta, float gamma) const
+    {
+        int x = 0;
+        v_float32x4 v_alpha = v_setall_f32(alpha), v_beta = v_setall_f32(beta),
+                    v_gamma = v_setall_f32(gamma);
+
+        for ( ; x <= width - 16; x += 16)
+        {
+            v_int8x16 v_src1 = v_load(src1 + x);
+            v_int8x16 v_src2 = v_load(src2 + x);
+
+            v_int16x8 v_src1h, v_src1l, v_src2h, v_src2l;
+            v_expand(v_src1, v_src1h, v_src1l);
+            v_expand(v_src2, v_src2h, v_src2l);
+            v_int32x4 v_src11, v_src12, v_src13, v_src14, v_src21, v_src22, v_src23, v_src24;
+            v_expand(v_src1h, v_src11, v_src12);
+            v_expand(v_src1l, v_src13, v_src14);
+            v_expand(v_src2h, v_src21, v_src22);
+            v_expand(v_src2l, v_src23, v_src24);
+
+            v_float32x4 v_dst11 = v_alpha * v_cvt_f32(v_src11) + v_beta * v_cvt_f32(v_src21) + v_gamma;
+            v_float32x4 v_dst12 = v_alpha * v_cvt_f32(v_src12) + v_beta * v_cvt_f32(v_src22) + v_gamma;
+            v_float32x4 v_dst13 = v_alpha * v_cvt_f32(v_src13) + v_beta * v_cvt_f32(v_src23) + v_gamma;
+            v_float32x4 v_dst14 = v_alpha * v_cvt_f32(v_src14) + v_beta * v_cvt_f32(v_src24) + v_gamma;
+
+            v_int16x8 v_dsth = v_pack(v_round(v_dst11), v_round(v_dst12));
+            v_int16x8 v_dstl = v_pack(v_round(v_dst13), v_round(v_dst14));
+            v_int8x16 v_dst = v_pack(v_dsth, v_dstl);
+            v_store(dst + x, v_dst);
+        }
+
+        return x;
+    }
+};
+
+template <>
+struct AddWeighted_SIMD<ushort, float>
+{
+    int operator() (const ushort * src1, const ushort * src2, ushort * dst, int width, float alpha, float beta, float gamma) const
+    {
+        int x = 0;
+        v_float32x4 v_alpha = v_setall_f32(alpha), v_beta = v_setall_f32(beta),
+                    v_gamma = v_setall_f32(gamma);
+
+        for ( ; x <= width - 8; x += 8)
+        {
+            v_uint16x8 v_src1 = v_load(src1 + x);
+            v_uint16x8 v_src2 = v_load(src2 + x);
+
+            v_uint32x4 v_src1h, v_src1l, v_src2h, v_src2l;
+            v_expand(v_src1, v_src1h,v_src1l);
+            v_expand(v_src2, v_src2h,v_src2l);
+
+            v_float32x4 v_dst1 = v_alpha * v_cvt_f32(v_reinterpret_as_s32(v_src1h)) + v_beta * v_cvt_f32(v_reinterpret_as_s32(v_src2h)) + v_gamma;
+            v_float32x4 v_dst2 = v_alpha * v_cvt_f32(v_reinterpret_as_s32(v_src1l)) + v_beta * v_cvt_f32(v_reinterpret_as_s32(v_src2l)) + v_gamma;
+
+            v_uint16x8 v_dst = v_pack_u(v_round(v_dst1), v_round(v_dst2));
+            v_store(dst + x, v_dst);
+        }
+
+        return x;
+    }
+};
+
+template <>
+struct AddWeighted_SIMD<short, float>
+{
+    int operator() (const short * src1, const short * src2, short * dst, int width, float alpha, float beta, float gamma) const
+    {
+        int x = 0;
+        v_float32x4 v_alpha = v_setall_f32(alpha), v_beta = v_setall_f32(beta),
+                    v_gamma = v_setall_f32(gamma);
+
+        for ( ; x <= width - 8; x += 8)
+        {
+            v_int16x8 v_src1 = v_load(src1 + x);
+            v_int16x8 v_src2 = v_load(src2 + x);
+
+            v_int32x4 v_src1h, v_src1l, v_src2h, v_src2l;
+            v_expand(v_src1, v_src1h, v_src1l);
+            v_expand(v_src2, v_src2h, v_src2l);
+
+            v_float32x4 v_dst1 = v_alpha * v_cvt_f32(v_src1h) + v_beta * v_cvt_f32(v_src2h) + v_gamma;
+            v_float32x4 v_dst2 = v_alpha * v_cvt_f32(v_src1l) + v_beta * v_cvt_f32(v_src2l) + v_gamma;
+
+            v_int16x8 v_dst = v_pack(v_round(v_dst1), v_round(v_dst2));
+            v_store(dst + x, v_dst);
         }
 
         return x;

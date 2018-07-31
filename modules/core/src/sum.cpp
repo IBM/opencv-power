@@ -273,6 +273,131 @@ struct Sum_SIMD<short, int>
     }
 };
 
+#elif CV_VSX
+template <>
+struct Sum_SIMD<uchar, int>
+{
+    int operator () (const uchar * src0, const uchar * mask, int * dst, int len, int cn) const
+    {
+        if (mask || (cn != 1 && cn != 2 && cn != 4))
+            return 0;
+
+        int x = 0;
+        v_uint32x4 v_sum = v_setzero_u32();
+
+        for ( ; x <= len - 16; x += 16)
+        {
+                v_uint8x16 v_val = v_load(src0 + x);
+                v_uint16x8 v_half1, v_half2;
+                v_uint32x4 v_val1, v_val2, v_val3, v_val4;
+                v_expand(v_val, v_half1, v_half2);
+                v_expand(v_half1, v_val1, v_val2);
+                v_expand(v_half2, v_val3, v_val4);
+                v_sum += v_val1;
+                v_sum += v_val2;
+                v_sum += v_val3;
+                v_sum += v_val4;
+        }
+
+        unsigned int CV_DECL_ALIGNED(16) ar[4];
+        v_store(ar, v_sum);
+        addChannels(dst, ar, cn);
+
+        return x / cn;
+    }
+};
+
+template <>
+struct Sum_SIMD<schar, int>
+{
+    int operator () (const schar * src0, const uchar * mask, int * dst, int len, int cn) const
+    {
+        if (mask || (cn != 1 && cn != 2 && cn != 4))
+            return 0;
+
+        int x = 0;
+        v_int32x4 v_sum = v_setzero_s32();
+
+        for ( ; x <= len - 16; x += 16)
+        {
+                v_int8x16 v_val = v_load(src0 + x);
+                v_int16x8 v_half1, v_half2;
+                v_int32x4 v_val1, v_val2, v_val3, v_val4;
+                v_expand(v_val, v_half1, v_half2);
+                v_expand(v_half1, v_val1, v_val2);
+                v_expand(v_half2, v_val3, v_val4);
+                v_sum += v_val1;
+                v_sum += v_val2;
+                v_sum += v_val3;
+                v_sum += v_val4;
+        }
+
+        int CV_DECL_ALIGNED(16) ar[4];
+        v_store(ar, v_sum);
+        addChannels(dst, ar, cn);
+
+        return x / cn;
+    }
+};
+
+template <>
+struct Sum_SIMD<ushort, int>
+{
+    int operator () (const ushort * src0, const uchar * mask, int * dst, int len, int cn) const
+    {
+        if (mask || (cn != 1 && cn != 2 && cn != 4))
+            return 0;
+
+        int x = 0;
+        v_uint32x4 v_sum = v_setzero_u32();
+
+        for ( ; x <= len - 8; x += 8)
+        {
+                v_uint16x8 v_val = v_load(src0 + x);
+                v_uint32x4 v_half1, v_half2;
+                v_expand(v_val, v_half1, v_half2);
+                v_sum += v_half1;
+                v_sum += v_half2;
+        }
+
+        unsigned int CV_DECL_ALIGNED(16) ar[4];
+        v_store(ar, v_sum);
+
+        addChannels(dst, ar, cn);
+
+        return x / cn;
+    }
+};
+
+template <>
+struct Sum_SIMD<short, int>
+{
+    int operator () (const short * src0, const uchar * mask, int * dst, int len, int cn) const
+    {
+        if (mask || (cn != 1 && cn != 2 && cn != 4))
+            return 0;
+
+        int x = 0;
+        v_int32x4 v_sum = v_setzero_s32();
+
+        for ( ; x <= len - 8; x += 8)
+        {
+                v_int16x8 v_val = v_load(src0 + x);
+                v_int32x4 v_half1, v_half2;
+                v_expand(v_val, v_half1, v_half2);
+                v_sum += v_half1;
+                v_sum += v_half2;
+        }
+
+        int CV_DECL_ALIGNED(16) ar[4];
+        v_store(ar, v_sum);
+
+        addChannels(dst, ar, cn);
+
+        return x / cn;
+    }
+};
+
 #endif
 
 template<typename T, typename ST>

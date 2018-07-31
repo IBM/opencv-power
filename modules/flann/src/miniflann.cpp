@@ -340,7 +340,7 @@ buildIndex(void*& index, const Mat& data, const IndexParams& params, const Dista
     buildIndex_<Distance, ::cvflann::Index<Distance> >(index, data, params, dist);
 }
 
-#if CV_NEON
+#if CV_NEON || CV_VSX
 typedef ::cvflann::Hamming<uchar> HammingDistance;
 #else
 typedef ::cvflann::HammingLUT HammingDistance;

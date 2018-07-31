@@ -43,6 +43,7 @@
 
 #include "precomp.hpp"
 #include "opencl_kernels_imgproc.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 namespace cv
 {
@@ -138,6 +139,75 @@ struct Integral_SIMD<uchar, int, double>
     bool haveSSE2;
 };
 
+#elif CV_VSX
+template <>
+struct Integral_SIMD<uchar, int, double>
+{
+    bool haveVSX;
+    Integral_SIMD()
+    {
+        haveVSX = checkHardwareSupport(CV_CPU_VSX);
+    }
+
+    bool operator()(const uchar * src, size_t _srcstep,
+                    int * sum, size_t _sumstep,
+                    double * sqsum, size_t,
+                    int * tilted, size_t,
+                    int width, int height, int cn) const
+    {
+        if (sqsum || tilted || cn != 1 || !haveVSX)
+            return false;
+
+        memset(sum, 0, (width + 1) * sizeof(int));
+
+        int j = 0;
+
+        for (int i = 0; i < height; ++i)
+        {
+            const uchar * src_row = src + _srcstep * i;
+            int * prev_sum_row = (int *)((uchar *)sum + _sumstep * i) + 1;
+            int * sum_row = (int *)((uchar *)sum + _sumstep * (i + 1)) + 1;
+
+            sum_row[-1] = 0;
+            j = 0;
+            v_uint32x4 v1 = v_setall_u32(0), v2, v3, v4;
+
+            for ( ; j + 16 <= width; j += 16)
+            {
+                v_int32x4 v_pre_s1 = v_load(prev_sum_row + j);
+                v_int32x4 v_pre_s2 = v_load(prev_sum_row + j + 4);
+                v_int32x4 v_pre_s3 = v_load(prev_sum_row + j + 8);
+                v_int32x4 v_pre_s4 = v_load(prev_sum_row + j + 12);
+                v_uint8x16 v_src = v_load(src_row + j);
+                v_uint16x8 v_src1, v_src2;
+                v_expand(v_src, v_src1, v_src2);
+                v_uint32x4 v_src10, v_src11, v_src20, v_src21;
+                v_expand(v_src1, v_src10, v_src11);
+                v_expand(v_src2, v_src20, v_src21);
+
+                v1 = v1 + (v_src10 + v_rotate_left<1>(v_src10) + v_rotate_left<2>(v_src10) + v_rotate_left<3>(v_src10));
+                v2 = v_setall_u32(vec_extract(v1.val, 3));
+                v2 = v2 + (v_src11 + v_rotate_left<1>(v_src11) + v_rotate_left<2>(v_src11) + v_rotate_left<3>(v_src11));
+                v3 = v_setall_u32(vec_extract(v2.val, 3));
+                v3 = v3 + (v_src20 + v_rotate_left<1>(v_src20) + v_rotate_left<2>(v_src20) + v_rotate_left<3>(v_src20));
+                v4 = v_setall_u32(vec_extract(v3.val, 3));
+                v4 = v4 + (v_src21 + v_rotate_left<1>(v_src21) + v_rotate_left<2>(v_src21) + v_rotate_left<3>(v_src21));
+                v_store(sum_row+j   , v_reinterpret_as_s32(v1) + v_pre_s1);
+                v_store(sum_row+j+4 , v_reinterpret_as_s32(v2) + v_pre_s2);
+                v_store(sum_row+j+8 , v_reinterpret_as_s32(v3) + v_pre_s3);
+                v_store(sum_row+j+12, v_reinterpret_as_s32(v4) + v_pre_s4);
+                v1 = v_setall_u32(vec_extract(v4.val, 3));
+            }
+
+            for (int v = sum_row[j - 1] - prev_sum_row[j - 1]; j < width; ++j) {
+                sum_row[j] = (v += src_row[j]) + prev_sum_row[j];
+            }
+        }
+        return true;
+    }
+
+    bool have_VSX;
+};
 #endif
 
 template<typename T, typename ST, typename QT>

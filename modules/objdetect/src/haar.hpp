@@ -46,6 +46,9 @@
 
 #define CV_HAAR_FEATURE_MAX_LOCAL 3
 
+#include "precomp.hpp"
+#include "opencv2/core/hal/intrin.hpp"
+
 typedef int sumtype;
 typedef double sqsumtype;
 
@@ -95,6 +98,12 @@ namespace cv_haar_avx
     double icvEvalHidHaarStumpClassifierTwoRectAVX(CvHidHaarClassifier* classifier, double variance_norm_factor, size_t p_offset);
 #endif
 }
+
+#if CV_VSX
+    double icvEvalHidHaarClassifierVSX(CvHidHaarClassifier* classifier, double variance_norm_factor, size_t p_offset);
+    double icvEvalHidHaarStumpClassifierVSX(CvHidHaarClassifier* classifier, double variance_norm_factor, size_t p_offset);
+    double icvEvalHidHaarStumpClassifierTwoRectVSX(CvHidHaarClassifier* classifier, double variance_norm_factor, size_t p_offset);
+#endif
 
 #endif
 

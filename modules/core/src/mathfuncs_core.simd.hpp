@@ -283,6 +283,12 @@ void invSqrt64f(const double* src, double* dst, int len)
     __m128d v_1 = _mm_set1_pd(1.0);
     for ( ; i <= len - 2; i += 2)
         _mm_storeu_pd(dst + i, _mm_div_pd(v_1, _mm_sqrt_pd(_mm_loadu_pd(src + i))));
+#elif CV_VSX
+    v_float64x2 v_1 = v_setall_f64(1.0);
+    for ( ; i <= len - 2; i += 2) {
+        v_float64x2 vx = v_load(src + i);
+        v_store(dst + i, (v_1 / v_sqrt(vx)));
+    }
 #endif
 
     for( ; i < len; i++ )
@@ -681,6 +687,115 @@ void exp32f( const float *_x, float *y, int n )
         }
     }
     else
+#elif CV_VSX
+    if( n >= 8 )
+    {
+        static const v_float64x2 prescale2 = v_setall_f64(exp_prescale);
+        static const v_float32x4 postscale4 = v_setall_f32((float)exp_postscale);
+        static const v_float32x4 maxval4 = v_setall_f32((float)(exp_max_val/exp_prescale));
+        static const v_float32x4 minval4 = v_setall_f32((float)(-exp_max_val/exp_prescale));
+
+        static const v_float32x4 mA1 = v_setall_f32(A1);
+        static const v_float32x4 mA2 = v_setall_f32(A2);
+        static const v_float32x4 mA3 = v_setall_f32(A3);
+        static const v_float32x4 mA4 = v_setall_f32(A4);
+
+        ushort CV_DECL_ALIGNED(16) tab_idx[8];
+
+        for( ; i <= n - 8; i += 8 )
+        {
+            v_float32x4 xf0, xf1;
+            xf0 = v_load(&x[i].f);
+            xf1 = v_load(&x[i+4].f);
+            v_int32x4 xi0, xi1, xi2, xi3;
+
+            xf0 = v_min(v_max(xf0, minval4), maxval4);
+            xf1 = v_min(v_max(xf1, minval4), maxval4);
+
+            v_float64x2 xd0 = v_cvt_f64(xf0);
+            v_float64x2 xd2 = v_cvt_f64_high(xf0);
+            v_float64x2 xd1 = v_cvt_f64(xf1);
+            v_float64x2 xd3 = v_cvt_f64_high(xf1);
+
+            xd0 = xd0 * prescale2;
+            xd2 = xd2 * prescale2;
+            xd1 = xd1 * prescale2;
+            xd3 = xd3 * prescale2;
+
+            xi0 = v_round(xd0);
+            xi2 = v_round(xd2);
+
+            xi1 = v_round(xd1);
+            xi3 = v_round(xd3);
+
+            xd0 = xd0 - v_cvt_f64(xi0);
+            xd2 = xd2 - v_cvt_f64(xi2);
+            xd1 = xd1 - v_cvt_f64(xi1);
+            xd3 = xd3 - v_cvt_f64(xi3);
+
+            xf0 = v_combine_low(v_cvt_f32(xd0), v_cvt_f32(xd2));
+            xf1 = v_combine_low(v_cvt_f32(xd1), v_cvt_f32(xd3));
+
+            xf0 = xf0 * postscale4;
+            xf1 = xf1 * postscale4;
+
+            xi0 = v_int32x4((vec_int4)vec_mergeh((vec_dword2)xi0.val, (vec_dword2)xi2.val));
+            xi1 = v_int32x4((vec_int4)vec_mergeh((vec_dword2)xi1.val, (vec_dword2)xi3.val));
+            xi0 = v_int32x4((vec_int4)vec_mergesqe((vec_short8)(xi0.val), (vec_short8)(xi1.val)));
+
+            xi1 = v_reinterpret_as_s32(v_reinterpret_as_s16(xi0) & v_setall_s16(EXPTAB_MASK));
+            v_store((int *)tab_idx, xi1);
+
+            v_int16x8 xs2 = (v_reinterpret_as_s16(xi0) >> EXPTAB_SCALE) + v_setall_s16(127);
+            xs2 = v_max(xs2, v_setall_s16(0));
+            xs2 = v_min(xs2, v_setall_s16(255));
+            xi0 = v_reinterpret_as_s32(xs2);
+            xi1 = v_int32x4(vec_unpackl((vec_short8)(xi0.val)));
+            xi0 = v_int32x4(vec_unpackh((vec_short8)(xi0.val)));
+
+            v_float64x2 ef0, ef1, ef2, ef3, ef4, ef5, ef6, ef7, ef8;
+            ef0 = v_load(expTab + tab_idx[0]);
+            ef1 = v_load(expTab + tab_idx[1]);
+            ef2 = v_load(expTab + tab_idx[2]);
+            ef3 = v_load(expTab + tab_idx[3]);
+            ef4 = v_load(expTab + tab_idx[4]);
+            ef5 = v_load(expTab + tab_idx[5]);
+            ef6 = v_load(expTab + tab_idx[6]);
+            ef7 = v_load(expTab + tab_idx[7]);
+            v_float64x2 yd0 = v_float64x2(vec_mergeh(ef0.val, ef1.val));
+            v_float64x2 yd1 = v_float64x2(vec_mergeh(ef2.val, ef3.val));
+            v_float64x2 yd2 = v_float64x2(vec_mergeh(ef4.val, ef5.val));
+            v_float64x2 yd3 = v_float64x2(vec_mergeh(ef6.val, ef7.val));
+
+            v_float32x4 yf0 = v_combine_low(v_cvt_f32(yd0), v_cvt_f32(yd1));
+            v_float32x4 yf1 = v_combine_low(v_cvt_f32(yd2), v_cvt_f32(yd3));
+
+            xi0 = xi0 << 23;
+            xi1 = xi1 << 23;
+
+            yf0 = yf0 * v_reinterpret_as_f32(xi0);
+            yf1 = yf1 * v_reinterpret_as_f32(xi1);
+
+            v_float32x4 zf0 = xf0 + mA1;
+            v_float32x4 zf1 = xf1 + mA1;
+
+            zf0 = (zf0 * xf0) + mA2;
+            zf1 = (zf1 * xf1) + mA2;
+
+            zf0 = (zf0 * xf0) + mA3;
+            zf1 = (zf1 * xf1) + mA3;
+
+            zf0 = (zf0 * xf0) + mA4;
+            zf1 = (zf1 * xf1) + mA4;
+
+            zf0 = zf0 * yf0;
+            zf1 = zf1 * yf1;
+
+            v_store(y + i, zf0);
+            v_store(y + i + 4, zf1);
+        }
+    }
+    else
 #endif
         for( ; i <= n - 4; i += 4 )
         {
@@ -844,6 +959,86 @@ void exp64f( const double *_x, double *y, int n )
 
         _mm_storeu_pd(y + i, zf0);
         _mm_storeu_pd(y + i + 2, zf1);
+    }
+#elif CV_VSX
+    static const v_float64x2 prescale2 = v_setall_f64(exp_prescale);
+    static const v_float64x2 postscale2 = v_setall_f64(exp_postscale);
+    static const v_float64x2 maxval2 = v_setall_f64(exp_max_val);
+    static const v_float64x2 minval2 = v_setall_f64(-exp_max_val);
+
+    static const v_float64x2 mA0 = v_setall_f64(A0);
+    static const v_float64x2 mA1 = v_setall_f64(A1);
+    static const v_float64x2 mA2 = v_setall_f64(A2);
+    static const v_float64x2 mA3 = v_setall_f64(A3);
+    static const v_float64x2 mA4 = v_setall_f64(A4);
+    static const v_float64x2 mA5 = v_setall_f64(A5);
+
+    int CV_DECL_ALIGNED(16) tab_idx[4];
+
+    for( ; i <= n - 4; i += 4 )
+    {
+        v_float64x2 xf0 = v_load(&x[i].f), xf1 = v_load(&x[i+2].f);
+        v_int32x4 xi0, xi1;
+        xf0 = v_min(v_max(xf0, minval2), maxval2);
+        xf1 = v_min(v_max(xf1, minval2), maxval2);
+        xf0 = xf0 * prescale2;
+        xf1 = xf1 * prescale2;
+
+        xi0 = v_round(xf0);
+        xi1 = v_round(xf1);
+        xf0 = (xf0 - v_cvt_f64(xi0)) * postscale2;
+        xf1 = (xf1 - v_cvt_f64(xi1)) * postscale2;
+
+        xi0 = v_int32x4((vec_int4)vec_mergeh((vec_dword2)xi0.val, (vec_dword2)xi1.val));
+        xi1 = xi0 & v_setall_s32(EXPTAB_MASK);
+        v_store(tab_idx, xi1);
+
+        xi1 = v_setall_s32(EXPTAB_SCALE);
+        xi0 = (v_reinterpret_as_s32(xi0) >> EXPTAB_SCALE) + v_setall_s32(1023);
+        v_int16x8 xs2 = v_int16x8(vec_mergesqe((vec_short8)xi0.val, (vec_short8)xi0.val));
+        xs2 = v_max(xs2, v_setall_s16(0));
+        xs2 = v_min(xs2, v_setall_s16(2047));
+        xs2 = v_int16x8(vec_mergel(xs2.val, v_setall_s16(0).val));
+        xi0 = v_reinterpret_as_s32(xs2);
+        xi1 = v_int32x4(vec_mergel(xi0.val, v_setall_s32(0).val));
+        xi0 = v_int32x4(vec_mergeh(xi0.val, v_setall_s32(0).val));
+
+        v_float64x2 ef0, ef1, ef2, ef3;
+        ef0 = v_load(expTab + tab_idx[0]);
+        ef1 = v_load(expTab + tab_idx[1]);
+        ef2 = v_load(expTab + tab_idx[2]);
+        ef3 = v_load(expTab + tab_idx[3]);
+        v_float64x2 yf0 = v_float64x2(vec_mergeh(ef0.val, ef1.val));
+        v_float64x2 yf1 = v_float64x2(vec_mergeh(ef2.val, ef3.val));
+        v_int64x2 xl0 = v_reinterpret_as_s64(xi0);
+        v_int64x2 xl1 = v_reinterpret_as_s64(xi1);
+        xl0 = xl0 << 52;
+        xl1 = xl1 << 52;
+        v_float64x2 xf2 = v_reinterpret_as_f64(xl0);
+        v_float64x2 xf3 = v_reinterpret_as_f64(xl1);
+        yf0 = yf0 * xf2;
+        yf1 = yf1 * xf3;
+
+        v_float64x2 zf0 = (mA0 * xf0) + mA1;
+        v_float64x2 zf1 = (mA0 * xf1) + mA1;
+
+        zf0 = (zf0 * xf0) + mA2;
+        zf1 = (zf1 * xf1) + mA2;
+
+        zf0 = (zf0 * xf0) + mA3;
+        zf1 = (zf1 * xf1) + mA3;
+
+        zf0 = (zf0 * xf0) + mA4;
+        zf1 = (zf1 * xf1) + mA4;
+
+        zf0 = (zf0 * xf0) + mA5;
+        zf1 = (zf1 * xf1) + mA5;
+
+        zf0 = zf0 * yf0;
+        zf1 = zf1 * yf1;
+
+        v_store(y + i, zf0);
+        v_store(y + i + 2, zf1);
     }
 #endif
     for( ; i <= n - 4; i += 4 )
@@ -1273,6 +1468,56 @@ void log32f( const float *_x, float *y, int n )
 
         _mm_storeu_ps(y + i, yf0);
     }
+#elif CV_VSX
+    static const v_float64x2 ln2_2 = v_setall_f64(ln_2);
+    static const v_float32x4 _1_4 = v_setall_f32(1.f);
+    static const v_float32x4 shift4 = v_setall_f32(-1.f/512);
+
+    static const v_float32x4 mA0 = v_setall_f32(A0);
+    static const v_float32x4 mA1 = v_setall_f32(A1);
+    static const v_float32x4 mA2 = v_setall_f32(A2);
+
+    int CV_DECL_ALIGNED(16) idx[4];
+
+    for( ; i <= n - 4; i += 4 )
+    {
+        v_int32x4 h0 = v_load((int *)(x+i));
+        v_int32x4 yi0 = ((h0 >> 23) & v_setall_s32(255)) - v_setall_s32(127);
+        v_float64x2 yd0 = v_cvt_f64(yi0) * ln2_2;
+        v_float64x2 yd1 = v_cvt_f64_high(yi0) * ln2_2;
+
+        v_int32x4 xi0 = (h0 & v_setall_s32(LOGTAB_MASK2_32F)) | v_setall_s32(127<<23);
+
+        h0 = (h0 >> (23 - LOGTAB_SCALE - 1)) & v_setall_s32(LOGTAB_MASK * 2);
+        v_store(idx, h0);
+        h0 = h0 == v_setall_s32(510);
+
+        v_float64x2 t0, t1, t2, t3, t4;
+        t0 = v_load(icvLogTab + idx[0]);
+        t2 = v_load(icvLogTab + idx[1]);
+        t1 = v_float64x2(vec_mergel(t0.val, t2.val));
+        t0 = v_float64x2(vec_mergeh(t0.val, t2.val));
+        t2 = v_load(icvLogTab + idx[2]);
+        t4 = v_load(icvLogTab + idx[3]);
+        t3 = v_float64x2(vec_mergel(t2.val, t4.val));
+        t2 = v_float64x2(vec_mergeh(t2.val, t4.val));
+
+        yd0 = yd0 + t0;
+        yd1 = yd1 + t2;
+
+        v_float32x4 yf0 = v_combine_low(v_cvt_f32(yd0), v_cvt_f32(yd1));
+
+        v_float32x4 xf0 = v_reinterpret_as_f32(xi0) - _1_4;
+        xf0 = xf0 * v_combine_low(v_cvt_f32(t1), v_cvt_f32(t3));
+        xf0 = xf0 + (v_reinterpret_as_f32(h0) & shift4);
+
+        v_float32x4 zf0 = xf0 * mA0;
+        zf0 = (zf0 + mA1) * xf0;
+        zf0 = (zf0 + mA2) * xf0;
+        yf0 = yf0 + zf0;
+
+        v_store(y + i, yf0);
+    }
 #endif
     for( ; i <= n - 4; i += 4 )
     {
@@ -1455,6 +1700,90 @@ void log64f( const double *x, double *y, int n )
 
         _mm_storeu_pd(y + i, yd0);
         _mm_storeu_pd(y + i + 2, yd1);
+    }
+#elif CV_VSX
+    static const v_float64x2 ln2_2 = v_setall_f64(ln_2);
+    static const v_float64x2 _1_2 = v_setall_f64(1.);
+    static const v_float64x2 shift2 = v_setall_f64(-1./512);
+
+    static const v_int32x4 log_and_mask2 = v_int32x4(0xffffffff, LOGTAB_MASK2, 0xffffffff, LOGTAB_MASK2);
+    static const v_int32x4 log_or_mask2 = v_int32x4(0, 1023 << 20, 0, 1023 << 20);
+
+    static const v_float64x2 mA0 = v_setall_f64(A0);
+    static const v_float64x2 mA1 = v_setall_f64(A1);
+    static const v_float64x2 mA2 = v_setall_f64(A2);
+    static const v_float64x2 mA3 = v_setall_f64(A3);
+    static const v_float64x2 mA4 = v_setall_f64(A4);
+    static const v_float64x2 mA5 = v_setall_f64(A5);
+    static const v_float64x2 mA6 = v_setall_f64(A6);
+    static const v_float64x2 mA7 = v_setall_f64(A7);
+
+    int CV_DECL_ALIGNED(16) idx[4];
+
+    for( ; i <= n - 4; i += 4 )
+    {
+        v_int32x4 h0 = v_load((int *)(x+i));
+        v_int32x4 h1 = v_load((int *)(x+i+2));
+
+        v_int32x4 xi0 = (h0 & log_and_mask2) | log_or_mask2;
+        v_int32x4 xi1 = (h1 & log_and_mask2) | log_or_mask2;
+        v_float64x2 xd0 = v_reinterpret_as_f64(xi0);
+        v_float64x2 xd1 = v_reinterpret_as_f64(xi1);
+
+        h0 = v_int32x4(vec_mergel(vec_mergeh(h0.val, h1.val), vec_mergel(h0.val, h1.val)));
+
+        v_int32x4 yi0 = ((h0 >> 20) & v_setall_s32(2047)) - v_setall_s32(1023);
+
+        v_float64x2 yd0 = v_cvt_f64(yi0) * ln2_2;
+        v_float64x2 yd1 = v_cvt_f64_high(yi0) * ln2_2;
+
+        h0 = (h0 >> (20 - LOGTAB_SCALE - 1)) & v_setall_s32(LOGTAB_MASK * 2);
+        v_store(idx, h0);
+        h0 = h0 == v_setall_s32(510);
+
+        v_float64x2 t0, t1, t2, t3, t4;
+        t0 = v_load(icvLogTab + idx[0]);
+        t2 = v_load(icvLogTab + idx[1]);
+        t1 = v_float64x2(vec_mergel(t0.val, t2.val));
+        t0 = v_float64x2(vec_mergeh(t0.val, t2.val));
+        t2 = v_load(icvLogTab + idx[2]);
+        t4 = v_load(icvLogTab + idx[3]);
+        t3 = v_float64x2(vec_mergel(t2.val, t4.val));
+        t2 = v_float64x2(vec_mergeh(t2.val, t4.val));
+
+        yd0 = yd0 + t0;
+        yd1 = yd1 + t2;
+
+        xd0 = (xd0 - _1_2) * t1;
+        xd1 = (xd1 - _1_2) * t3;
+
+        v_int32x4 h0l = v_int32x4(vec_mergeh(h0.val, h0.val));
+        v_int32x4 h0h = v_int32x4(vec_mergel(h0.val, h0.val));
+        xd0 = xd0 + (v_reinterpret_as_f64(h0l) & shift2);
+        xd1 = xd1 + (v_reinterpret_as_f64(h0h) & shift2);
+
+        v_float64x2 zd0 = xd0 * mA0;
+        v_float64x2 zd1 = xd1 * mA0;
+        zd0 = (zd0 + mA1) * xd0;
+        zd1 = (zd1 + mA1) * xd1;
+        zd0 = (zd0 + mA2) * xd0;
+        zd1 = (zd1 + mA2) * xd1;
+        zd0 = (zd0 + mA3) * xd0;
+        zd1 = (zd1 + mA3) * xd1;
+        zd0 = (zd0 + mA4) * xd0;
+        zd1 = (zd1 + mA4) * xd1;
+        zd0 = (zd0 + mA5) * xd0;
+        zd1 = (zd1 + mA5) * xd1;
+        zd0 = (zd0 + mA6) * xd0;
+        zd1 = (zd1 + mA6) * xd1;
+        zd0 = (zd0 + mA7) * xd0;
+        zd1 = (zd1 + mA7) * xd1;
+
+        yd0 = yd0 + zd0;
+        yd1 = yd1 + zd1;
+
+        v_store(y + i, yd0);
+        v_store(y + i + 2, yd1);
     }
 #endif
     for( ; i <= n - 4; i += 4 )

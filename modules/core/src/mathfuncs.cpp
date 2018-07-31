@@ -434,6 +434,59 @@ static void SinCos_32f( const float *angle, float *sinval, float* cosval,
                                                     _mm_cvtpd_ps(v_cos_val_1)));
         }
     }
+#elif CV_VSX
+    if (USE_VSX)
+    {
+        v_float64x2 v_k1 = v_setall_f64(k1);
+        v_float64x2 v_1 = v_setall_f64(1);
+        v_int32x4 v_N1 = v_setall_s32(N - 1);
+        v_int32x4 v_N4 = v_setall_s32(N >> 2);
+        v_float64x2 v_sin_a0 = v_setall_f64(sin_a0);
+        v_float64x2 v_sin_a2 = v_setall_f64(sin_a2);
+        v_float64x2 v_cos_a0 = v_setall_f64(cos_a0);
+
+        for ( ; i <= len - 4; i += 4)
+        {
+            v_float32x4 v_angle = v_load(angle + i);
+
+            v_float64x2 v_tl = v_cvt_f64(v_angle) * v_k1;
+            v_float64x2 v_th = v_cvt_f64_high(v_angle) * v_k1;
+            v_int32x4 v_itl = v_round(v_tl);
+            v_int32x4 v_ith = v_round(v_th);
+            v_tl = v_tl - v_cvt_f64(v_itl);
+            v_th = v_th - v_cvt_f64(v_ith);
+
+            v_int32x4 v_sin_idxl = v_itl & v_N1;
+            v_int32x4 v_sin_idxh = v_ith & v_N1;
+            v_int32x4 v_cos_idxl = (v_N4 - v_sin_idxl) & v_N1;
+            v_int32x4 v_cos_idxh = (v_N4 - v_sin_idxh) & v_N1;
+
+            v_float64x2 v_tl2 = v_tl * v_tl;
+            v_float64x2 v_th2 = v_th * v_th;
+            v_float64x2 v_sin_bl = ((v_sin_a0 * v_tl2) + v_sin_a2) * v_tl;
+            v_float64x2 v_sin_bh = ((v_sin_a0 * v_th2) + v_sin_a2) * v_th;
+            v_float64x2 v_cos_bl = (v_cos_a0 * v_tl2) + v_1;
+            v_float64x2 v_cos_bh = (v_cos_a0 * v_th2) + v_1;
+
+            v_int32x4 v_sin_idx = v_int32x4((vec_int4)vec_mergeh((vec_dword2)(v_sin_idxl.val), (vec_dword2)(v_sin_idxh.val)));
+            v_int32x4 v_cos_idx = v_int32x4((vec_int4)vec_mergeh((vec_dword2)(v_cos_idxl.val), (vec_dword2)(v_cos_idxh.val)));
+            int32_t CV_DECL_ALIGNED(16) sin_idx[4], cos_idx[4];
+            v_store(sin_idx, v_sin_idx);
+            v_store(cos_idx, v_cos_idx);
+            v_float64x2 v_sin_al = v_float64x2(sin_table[sin_idx[0]], sin_table[sin_idx[1]]);
+            v_float64x2 v_sin_ah = v_float64x2(sin_table[sin_idx[2]], sin_table[sin_idx[3]]);
+            v_float64x2 v_cos_al = v_float64x2(sin_table[cos_idx[0]], sin_table[cos_idx[1]]);
+            v_float64x2 v_cos_ah = v_float64x2(sin_table[cos_idx[2]], sin_table[cos_idx[3]]);
+
+            v_float64x2 v_sin_val_l = (v_sin_al * v_cos_bl) + (v_cos_al * v_sin_bl);
+            v_float64x2 v_sin_val_h = (v_sin_ah * v_cos_bh) + (v_cos_ah * v_sin_bh);
+            v_float64x2 v_cos_val_l = (v_cos_al * v_cos_bl) - (v_sin_al * v_sin_bl);
+            v_float64x2 v_cos_val_h = (v_cos_ah * v_cos_bh) - (v_sin_ah * v_sin_bh);
+
+            v_store(sinval + i, v_combine_low(v_cvt_f32(v_sin_val_l), v_cvt_f32(v_sin_val_h)));
+            v_store(cosval + i, v_combine_low(v_cvt_f32(v_cos_val_l), v_cvt_f32(v_cos_val_h)));
+        }
+    }
 #endif
 
     for( ; i < len; i++ )

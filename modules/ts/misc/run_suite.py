@@ -10,7 +10,7 @@ class TestSuite(object):
         self.options = options
         self.cache = cache
         self.nameprefix = "opencv_" + self.options.mode + "_"
-        self.tests = self.cache.gatherTests(self.nameprefix + "*", self.isTest)
+        self.tests = sorted(self.cache.gatherTests(self.nameprefix + "*", self.isTest))
         self.id = id
 
     def getOS(self):

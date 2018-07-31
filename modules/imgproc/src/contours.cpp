@@ -40,6 +40,7 @@
 //M*/
 #include "precomp.hpp"
 #include "opencv2/core/hal/intrin.hpp"
+using namespace cv;
 
 /* initializes 8-element array for fast access to 3x3 neighborhood of a pixel */
 #define  CV_INIT_3X3_DELTAS( deltas, step, nch )            \
@@ -1013,6 +1014,8 @@ cvFindNextContour( CvContourScanner scanner )
 
 #if CV_SSE2
     bool haveSIMD = cv::checkHardwareSupport(CPU_SSE2);
+#elif CV_VSX
+    bool haveSIMD = cv::checkHardwareSupport(CPU_VSX);
 #endif
 
     CV_Assert(scanner->img_step >= 0);
@@ -1105,6 +1108,18 @@ cvFindNextContour( CvContourScanner scanner )
                         x += 16;
                     }
                 }
+#elif CV_VSX
+                if ((p = img[x]) != prev) {
+                    goto _next_contour;
+                } else if (haveSIMD) {
+                    v_int8x16  v_prev = v_setall_s8((char)prev);
+                    for (; x <= width - 16; x += 16) {
+                            v_int8x16 v_p = v_load(img + x);
+                            v_int8x16 v_cmp = ~(v_p == v_prev);
+                            if (v_reduce_sum(v_cmp) != 0)
+                                    break;
+                    }
+                }
 #endif
                 for( ; x < width && (p = img[x]) == prev; x++ )
                     ;
@@ -1112,7 +1127,7 @@ cvFindNextContour( CvContourScanner scanner )
 
             if( x >= width )
                 break;
-#if CV_SSE2
+#if CV_SSE2 || CV_VSX
         _next_contour:
 #endif
             {
@@ -1402,6 +1417,18 @@ inline int findStartContourPoint(uchar *src_data, CvSize img_size, int j, bool h
             j += 16;
         }
     }
+#elif CV_VSX
+    if (haveSIMD) {
+        v_int8x16 v_zero = v_setzero_s8();
+
+        for(; j <= img_size.width - 16; j += 16) {
+                v_int8x16 v_p = v_load((schar *)(src_data + j));
+                v_int8x16 v_cmp = ~(v_p == v_zero);
+
+                if (v_reduce_sum(v_cmp) != 0)
+                        break;
+        }
+    }
 #else
     CV_UNUSED(haveSIMD);
 #endif
@@ -1449,6 +1476,20 @@ inline int findEndContourPoint(uchar *src_data, CvSize img_size, int j, bool hav
                 return j;
             }
             j += 16;
+        }
+    }
+#elif CV_VSX
+    if (j < img_size.width && !src_data[j]) {
+        return j;
+    } else if (haveSIMD) {
+        v_int8x16 v_zero = v_setzero_s8();
+
+        for(; j <= img_size.width - 16; j += 16) {
+                v_int8x16 v_p = v_load((schar *)src_data + j);
+                v_int8x16 v_cmp = (v_p == v_zero);
+
+                if (v_reduce_sum(v_cmp) != 0)
+                        break;
         }
     }
 #else
@@ -1514,6 +1555,8 @@ icvFindContoursInInterval( const CvArr* src,
         CV_Error( CV_StsBadSize, "Contour header size must be >= sizeof(CvContour)" );
 #if CV_SSE2
     haveSIMD = cv::checkHardwareSupport(CPU_SSE2);
+#elif CV_VSX
+    haveSIMD = cv::checkHardwareSupport(CPU_VSX);
 #endif
     storage00.reset(cvCreateChildMemStorage(storage));
     storage01.reset(cvCreateChildMemStorage(storage));

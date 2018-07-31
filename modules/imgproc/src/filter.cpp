@@ -45,6 +45,7 @@
 #include "opencl_kernels_imgproc.hpp"
 #include "hal_replacement.hpp"
 #include "filter.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 
 /****************************************************************************************\
@@ -3019,6 +3020,1606 @@ typedef FilterNoVec FilterVec_8u;
 typedef FilterNoVec FilterVec_8u16s;
 typedef FilterNoVec FilterVec_32f;
 
+#elif CV_VSX
+
+///////////////////////////////////// 8u-16s & 8u-8u //////////////////////////////////
+
+struct RowVec_8u32s
+{
+    RowVec_8u32s() { smallValues = false; }
+    RowVec_8u32s( const Mat& _kernel )
+    {
+        kernel = _kernel;
+        smallValues = true;
+        int k, ksize = kernel.rows + kernel.cols - 1;
+        for( k = 0; k < ksize; k++ )
+        {
+            int v = kernel.ptr<int>()[k];
+            if( v < SHRT_MIN || v > SHRT_MAX )
+            {
+                smallValues = false;
+                break;
+            }
+        }
+    }
+
+    int operator()(const uchar* _src, uchar* _dst, int width, int cn) const
+    {
+        int i = 0, k, _ksize = kernel.rows + kernel.cols - 1;
+        int* dst = (int*)_dst;
+        const int* _kx = kernel.ptr<int>();
+        width *= cn;
+
+        if( smallValues )
+        {
+            v_int32x4 z = v_setall_s32(0);
+            for( ; i <= width - 16; i += 16 )
+            {
+                const uchar* src = _src + i;
+                v_int32x4 s0 = z, s1 = z, s2 = z, s3 = z;
+
+                for( k = 0; k < _ksize; k++, src += cn )
+                {
+                    v_int32x4 f = v_setall_s32(_kx[k]);
+
+                    v_uint8x16 x_uc = v_load(src);;
+                    v_uint16x8 x_ush, x_usl;
+                    v_expand(x_uc, x_ush, x_usl);
+                    v_uint32x4 x_uih1, x_uih2, x_uil1, x_uil2;
+                    v_expand(x_ush, x_uih1, x_uih2);
+                    v_expand(x_usl, x_uil1, x_uil2);
+
+                    s0 = s0 + v_reinterpret_as_s32(x_uih1) * f;
+                    s1 = s1 + v_reinterpret_as_s32(x_uih2) * f;
+                    s2 = s2 + v_reinterpret_as_s32(x_uil1) * f;
+                    s3 = s3 + v_reinterpret_as_s32(x_uil2) * f;
+                }
+
+                v_store((int*)(dst + i), s0);
+                v_store((int*)(dst + i + 4), s1);
+                v_store((int*)(dst + i + 8), s2);
+                v_store((int*)(dst + i + 12), s3);
+            }
+
+            if( i <= width - 8 )
+            {
+                const uchar* src = _src + i;
+                v_int32x4 s0 = z, s1 = z;
+
+                for( k = 0; k < _ksize; k++, src += cn )
+                {
+                    v_int32x4 f = v_setall_s32(_kx[k]);
+
+                    v_uint8x16 x_uc = v_load(src);;
+                    v_uint16x8 x_ush, x_usl;
+                    v_expand(x_uc, x_ush, x_usl);
+                    v_uint32x4 x_uih1, x_uih2, x_uil1, x_uil2;
+                    v_expand(x_ush, x_uih1, x_uih2);
+                    s0 = s0 + v_reinterpret_as_s32(x_uih1) * f;
+                    s1 = s1 + v_reinterpret_as_s32(x_uih2) * f;
+                }
+                v_store((int*)(dst + i), s0);
+                v_store((int*)(dst + i + 4), s1);
+                i += 8;
+            }
+
+            if( i <= width - 4 )
+            {
+                const uchar* src = _src + i;
+                v_int32x4 s0 = z;
+
+                for( k = 0; k < _ksize; k++, src += cn )
+                {
+                    v_int32x4 f = v_setall_s32(_kx[k]);
+
+                    v_uint8x16 x_uc = v_load(src);;
+                    v_uint16x8 x_ush, x_usl;
+                    v_expand(x_uc, x_ush, x_usl);
+                    v_uint32x4 x_uih1, x_uih2, x_uil1, x_uil2;
+                    v_expand(x_ush, x_uih1, x_uih2);
+                    s0 = s0 + v_reinterpret_as_s32(x_uih1) * f;
+                }
+                v_store((int*)(dst + i), s0);
+                i += 4;
+            }
+        }
+        return i;
+    }
+
+    Mat kernel;
+    bool smallValues;
+};
+
+struct SymmRowSmallVec_8u32s
+{
+    SymmRowSmallVec_8u32s() { smallValues = false; symmetryType = 0; }
+    SymmRowSmallVec_8u32s( const Mat& _kernel, int _symmetryType )
+    {
+        kernel = _kernel;
+        symmetryType = _symmetryType;
+        smallValues = true;
+        int k, ksize = kernel.rows + kernel.cols - 1;
+        for( k = 0; k < ksize; k++ )
+        {
+            int v = kernel.ptr<int>()[k];
+            if( v < SHRT_MIN || v > SHRT_MAX )
+            {
+                smallValues = false;
+                break;
+            }
+        }
+    }
+
+    int operator()(const uchar* src, uchar* _dst, int width, int cn) const
+    {
+        int i = 0, j, k, _ksize = kernel.rows + kernel.cols - 1;
+        int* dst = (int*)_dst;
+        bool symmetrical = (symmetryType & KERNEL_SYMMETRICAL) != 0;
+        const int* kx = kernel.ptr<int>() + _ksize/2;
+        if( !smallValues )
+            return 0;
+
+        src += (_ksize/2)*cn;
+        width *= cn;
+
+        if( symmetrical )
+        {
+            if( _ksize == 1 )
+                return 0;
+            if( _ksize == 3 )
+            {
+                if( kx[0] == 2 && kx[1] == 1 )
+                    for( ; i <= width - 16; i += 16, src += 16 )
+                    {
+                        v_uint8x16 v_uc_x0, v_uc_x1, v_uc_x2;
+                        v_uint16x8 v_us_x0, v_us_x1, v_us_x2, v_us_y0, v_us_y1, v_us_y2;
+                        v_uint32x4 v_ui_h, v_ui_l;
+                        v_uc_x0 = v_load(src - cn);
+                        v_uc_x1 = v_load(src);
+                        v_uc_x2 = v_load(src + cn);
+                        v_expand(v_uc_x0, v_us_x0, v_us_y0);
+                        v_expand(v_uc_x1, v_us_x1, v_us_y1);
+                        v_expand(v_uc_x2, v_us_x2, v_us_y2);
+
+                        v_us_x0 = v_us_x0 + (v_us_x1 + v_us_x1) + v_us_x2;
+                        v_us_y0 = v_us_y0 + (v_us_y1 + v_us_y1) + v_us_y2;
+
+                        v_expand(v_us_x0, v_ui_h, v_ui_l);
+                        v_store(dst + i, v_reinterpret_as_s32(v_ui_h));
+                        v_store(dst + i + 4, v_reinterpret_as_s32(v_ui_l));
+                        v_expand(v_us_y0, v_ui_h, v_ui_l);
+                        v_store(dst + i + 8, v_reinterpret_as_s32(v_ui_h));
+                        v_store(dst + i + 12, v_reinterpret_as_s32(v_ui_l));
+                    }
+                else if( kx[0] == -2 && kx[1] == 1 )
+                    for( ; i <= width - 16; i += 16, src += 16 )
+                    {
+                        v_uint8x16 v_uc_x0, v_uc_x1, v_uc_x2;
+                        v_uint16x8 v_us_x0, v_us_x1, v_us_x2, v_us_y0, v_us_y1, v_us_y2;
+                        v_int16x8 v_s_x0, v_s_x1, v_s_x2, v_s_y0, v_s_y1, v_s_y2;
+                        v_int32x4 v_i_h, v_i_l;
+                        v_uc_x0 = v_load(src - cn);
+                        v_uc_x1 = v_load(src);
+                        v_uc_x2 = v_load(src + cn);
+                        v_expand(v_uc_x0, v_us_x0, v_us_y0);
+                        v_expand(v_uc_x1, v_us_x1, v_us_y1);
+                        v_expand(v_uc_x2, v_us_x2, v_us_y2);
+                        v_s_x0 = v_reinterpret_as_s16(v_us_x0);
+                        v_s_y0 = v_reinterpret_as_s16(v_us_y0);
+                        v_s_x1 = v_reinterpret_as_s16(v_us_x1);
+                        v_s_y1 = v_reinterpret_as_s16(v_us_y1);
+                        v_s_x2 = v_reinterpret_as_s16(v_us_x2);
+                        v_s_y2 = v_reinterpret_as_s16(v_us_y2);
+
+                        v_s_x0 = v_s_x0 + v_s_x2 - (v_s_x1 + v_s_x1);
+                        v_s_y0 = v_s_y0 + v_s_y2 - (v_s_y1 + v_s_y1);
+
+                        v_expand(v_s_x0, v_i_h, v_i_l);
+                        v_store(dst + i, v_i_h);
+                        v_store(dst + i + 4, v_i_l);
+                        v_expand(v_s_y0, v_i_h, v_i_l);
+                        v_store(dst + i + 8, v_i_h);
+                        v_store(dst + i + 12, v_i_l);
+                    }
+                else
+                {
+                    v_int32x4 k0 = v_setall_s32(kx[0]), k1 = v_setall_s32(kx[1]);
+
+                    for( ; i <= width - 16; i += 16, src += 16 )
+                    {
+                        v_uint8x16 v_uc_x0, v_uc_x1, v_uc_x2;
+                        v_uint16x8 v_us_x0, v_us_x1, v_us_x2, v_us_y0, v_us_y1, v_us_y2;
+                        v_uint32x4 v_ui_x0, v_ui_x1, v_ui_x2, v_ui_y0, v_ui_y1, v_ui_y2;
+                        v_int32x4 v_s_x0, v_s_y0;
+                        v_uc_x0 = v_load(src - cn);
+                        v_uc_x1 = v_load(src);
+                        v_uc_x2 = v_load(src + cn);
+
+                        v_expand(v_uc_x0, v_us_x0, v_us_y0);
+                        v_expand(v_uc_x1, v_us_x1, v_us_y1);
+                        v_expand(v_uc_x2, v_us_x2, v_us_y2);
+
+                        v_expand(v_us_x0, v_ui_x0, v_ui_y0);
+                        v_expand(v_us_x1, v_ui_x1, v_ui_y1);
+                        v_expand(v_us_x2, v_ui_x2, v_ui_y2);
+
+                        v_s_x0 = (v_reinterpret_as_s32(v_ui_x0) + v_reinterpret_as_s32(v_ui_x2)) * k1;
+                        v_s_y0 = (v_reinterpret_as_s32(v_ui_y0) + v_reinterpret_as_s32(v_ui_y2)) * k1;
+                        v_s_x0 = v_reinterpret_as_s32(v_ui_x1) * k0 + v_s_x0;
+                        v_s_y0 = v_reinterpret_as_s32(v_ui_y1) * k0 + v_s_y0;
+
+                        v_store(dst + i, v_s_x0);
+                        v_store(dst + i + 4, v_s_y0);
+
+                        v_expand(v_us_y0, v_ui_x0, v_ui_y0);
+                        v_expand(v_us_y1, v_ui_x1, v_ui_y1);
+                        v_expand(v_us_y2, v_ui_x2, v_ui_y2);
+
+                        v_s_x0 = (v_reinterpret_as_s32(v_ui_x0) + v_reinterpret_as_s32(v_ui_x2)) * k1;
+                        v_s_y0 = (v_reinterpret_as_s32(v_ui_y0) + v_reinterpret_as_s32(v_ui_y2)) * k1;
+                        v_s_x0 = v_reinterpret_as_s32(v_ui_x1) * k0 + v_s_x0;
+                        v_s_y0 = v_reinterpret_as_s32(v_ui_y1) * k0 + v_s_y0;
+
+                        v_store(dst + i + 8, v_s_x0);
+                        v_store(dst + i + 12, v_s_y0);
+                    }
+                }
+            }
+            else if( _ksize == 5 )
+            {
+                if( kx[0] == -2 && kx[1] == 0 && kx[2] == 1 )
+                    for( ; i <= width - 16; i += 16, src += 16 )
+                    {
+                        v_uint8x16 v_uc_x0, v_uc_x1, v_uc_x2;
+                        v_uint16x8 v_us_x0, v_us_x1, v_us_x2, v_us_y0, v_us_y1, v_us_y2;
+                        v_int16x8 v_s_x0, v_s_x1, v_s_x2, v_s_y0, v_s_y1, v_s_y2;
+                        v_int32x4 v_i_h, v_i_l;
+                        v_uc_x0 = v_load(src - cn*2);
+                        v_uc_x1 = v_load(src);
+                        v_uc_x2 = v_load(src + cn*2);
+                        v_expand(v_uc_x0, v_us_x0, v_us_y0);
+                        v_expand(v_uc_x1, v_us_x1, v_us_y1);
+                        v_expand(v_uc_x2, v_us_x2, v_us_y2);
+                        v_s_x0 = v_reinterpret_as_s16(v_us_x0);
+                        v_s_y0 = v_reinterpret_as_s16(v_us_y0);
+                        v_s_x1 = v_reinterpret_as_s16(v_us_x1);
+                        v_s_y1 = v_reinterpret_as_s16(v_us_y1);
+                        v_s_x2 = v_reinterpret_as_s16(v_us_x2);
+                        v_s_y2 = v_reinterpret_as_s16(v_us_y2);
+
+                        v_s_x0 = v_s_x0 + v_s_x2 - (v_s_x1 + v_s_x1);
+                        v_s_y0 = v_s_y0 + v_s_y2 - (v_s_y1 + v_s_y1);
+
+                        v_expand(v_s_x0, v_i_h, v_i_l);
+                        v_store(dst + i, v_i_h);
+                        v_store(dst + i + 4, v_i_l);
+                        v_expand(v_s_y0, v_i_h, v_i_l);
+                        v_store(dst + i + 8, v_i_h);
+                        v_store(dst + i + 12, v_i_l);
+                    }
+                else
+                {
+                    v_int32x4 k0 = v_setall_s32(kx[0]), k1 = v_setall_s32(kx[1]),
+                              k2 = v_setall_s32(kx[2]);
+
+                    for( ; i <= width - 16; i += 16, src += 16 )
+                    {
+                        v_uint8x16 v_uc_x0, v_uc_x1, v_uc_x2, v_uc_x3, v_uc_x4;
+                        v_uint16x8 v_us_x0, v_us_x1, v_us_x2, v_us_x3, v_us_x4, v_us_y0, v_us_y1, v_us_y2, v_us_y3, v_us_y4;
+                        v_uint32x4 v_ui_x0, v_ui_x1, v_ui_x2, v_ui_x3, v_ui_x4, v_ui_y0, v_ui_y1, v_ui_y2, v_ui_y3, v_ui_y4;
+                        v_int32x4 v_s_x0, v_s_y0;
+                        v_uc_x0 = v_load(src - cn*2);
+                        v_uc_x1 = v_load(src - cn);
+                        v_uc_x2 = v_load(src);
+                        v_uc_x3 = v_load(src + cn);
+                        v_uc_x4 = v_load(src + cn*2);
+
+                        v_expand(v_uc_x0, v_us_x0, v_us_y0);
+                        v_expand(v_uc_x1, v_us_x1, v_us_y1);
+                        v_expand(v_uc_x2, v_us_x2, v_us_y2);
+                        v_expand(v_uc_x3, v_us_x3, v_us_y3);
+                        v_expand(v_uc_x4, v_us_x4, v_us_y4);
+
+                        v_expand(v_us_x0, v_ui_x0, v_ui_y0);
+                        v_expand(v_us_x1, v_ui_x1, v_ui_y1);
+                        v_expand(v_us_x2, v_ui_x2, v_ui_y2);
+                        v_expand(v_us_x3, v_ui_x3, v_ui_y3);
+                        v_expand(v_us_x4, v_ui_x4, v_ui_y4);
+
+                        v_s_x0 = (v_reinterpret_as_s32(v_ui_x1) + v_reinterpret_as_s32(v_ui_x3)) * k1;
+                        v_s_y0 = (v_reinterpret_as_s32(v_ui_y1) + v_reinterpret_as_s32(v_ui_y3)) * k1;
+                        v_s_x0 = (v_reinterpret_as_s32(v_ui_x0) + v_reinterpret_as_s32(v_ui_x4)) * k2 + v_s_x0;
+                        v_s_y0 = (v_reinterpret_as_s32(v_ui_y0) + v_reinterpret_as_s32(v_ui_y4)) * k2 + v_s_y0;
+                        v_s_x0 = v_reinterpret_as_s32(v_ui_x2) * k0 + v_s_x0;
+                        v_s_y0 = v_reinterpret_as_s32(v_ui_y2) * k0 + v_s_y0;
+
+                        v_store(dst + i, v_s_x0);
+                        v_store(dst + i + 4, v_s_y0);
+
+                        v_expand(v_us_y0, v_ui_x0, v_ui_y0);
+                        v_expand(v_us_y1, v_ui_x1, v_ui_y1);
+                        v_expand(v_us_y2, v_ui_x2, v_ui_y2);
+                        v_expand(v_us_y3, v_ui_x3, v_ui_y3);
+                        v_expand(v_us_y4, v_ui_x4, v_ui_y4);
+
+                        v_s_x0 = (v_reinterpret_as_s32(v_ui_x1) + v_reinterpret_as_s32(v_ui_x3)) * k1;
+                        v_s_y0 = (v_reinterpret_as_s32(v_ui_y1) + v_reinterpret_as_s32(v_ui_y3)) * k1;
+                        v_s_x0 = (v_reinterpret_as_s32(v_ui_x0) + v_reinterpret_as_s32(v_ui_x4)) * k2 + v_s_x0;
+                        v_s_y0 = (v_reinterpret_as_s32(v_ui_y0) + v_reinterpret_as_s32(v_ui_y4)) * k2 + v_s_y0;
+                        v_s_x0 = v_reinterpret_as_s32(v_ui_x2) * k0 + v_s_x0;
+                        v_s_y0 = v_reinterpret_as_s32(v_ui_y2) * k0 + v_s_y0;
+
+                        v_store(dst + i + 8, v_s_x0);
+                        v_store(dst + i + 12, v_s_y0);
+                    }
+                }
+            }
+        }
+        else
+        {
+            if( _ksize == 3 )
+            {
+                if( kx[0] == 0 && kx[1] == 1 )
+                    for( ; i <= width - 16; i += 16, src += 16 )
+                    {
+                        v_uint8x16 v_uc_x0, v_uc_x1, v_uc_x2;
+                        v_uint16x8 v_us_x0, v_us_x1, v_us_x2, v_us_y0, v_us_y1, v_us_y2;
+                        v_int16x8 v_s_x0, v_s_x1, v_s_x2, v_s_y0, v_s_y1, v_s_y2;
+                        v_int32x4 v_i_h, v_i_l;
+                        v_uc_x0 = v_load(src + cn);
+                        v_uc_x1 = v_load(src - cn);
+                        v_expand(v_uc_x0, v_us_x0, v_us_y0);
+                        v_expand(v_uc_x1, v_us_x1, v_us_y1);
+                        v_s_x0 = v_reinterpret_as_s16(v_us_x0);
+                        v_s_y0 = v_reinterpret_as_s16(v_us_y0);
+                        v_s_x1 = v_reinterpret_as_s16(v_us_x1);
+                        v_s_y1 = v_reinterpret_as_s16(v_us_y1);
+
+                        v_s_x0 = v_s_x0 - v_s_x1;
+                        v_s_y0 = v_s_y0 - v_s_y1;
+
+                        v_expand(v_s_x0, v_i_h, v_i_l);
+                        v_store(dst + i, v_i_h);
+                        v_store(dst + i + 4, v_i_l);
+                        v_expand(v_s_y0, v_i_h, v_i_l);
+                        v_store(dst + i + 8, v_i_h);
+                        v_store(dst + i + 12, v_i_l);
+                    }
+                else
+                {
+                    v_int32x4 k1 = v_setall_s32(kx[1]);
+
+                    for( ; i <= width - 16; i += 16, src += 16 )
+                    {
+                        v_uint8x16 v_uc_x0, v_uc_x1;
+                        v_uint16x8 v_us_x0, v_us_x1, v_us_y0, v_us_y1;
+                        v_uint32x4 v_ui_x0, v_ui_x1, v_ui_y0, v_ui_y1;
+                        v_int32x4 v_s_x0, v_s_y0;
+                        v_uc_x0 = v_load(src + cn);
+                        v_uc_x1 = v_load(src - cn);
+
+                        v_expand(v_uc_x0, v_us_x0, v_us_y0);
+                        v_expand(v_uc_x1, v_us_x1, v_us_y1);
+
+                        v_expand(v_us_x0, v_ui_x0, v_ui_y0);
+                        v_expand(v_us_x1, v_ui_x1, v_ui_y1);
+
+                        v_s_x0 = (v_reinterpret_as_s32(v_ui_x0) - v_reinterpret_as_s32(v_ui_x1)) * k1;
+                        v_s_y0 = (v_reinterpret_as_s32(v_ui_y0) - v_reinterpret_as_s32(v_ui_y1)) * k1;
+
+                        v_store(dst + i, v_s_x0);
+                        v_store(dst + i + 4, v_s_y0);
+
+                        v_expand(v_us_y0, v_ui_x0, v_ui_y0);
+                        v_expand(v_us_y1, v_ui_x1, v_ui_y1);
+
+                        v_s_x0 = (v_reinterpret_as_s32(v_ui_x0) - v_reinterpret_as_s32(v_ui_x1)) * k1;
+                        v_s_y0 = (v_reinterpret_as_s32(v_ui_y0) - v_reinterpret_as_s32(v_ui_y1)) * k1;
+
+                        v_store(dst + i + 8, v_s_x0);
+                        v_store(dst + i + 12, v_s_y0);
+                    }
+                }
+            }
+            else if( _ksize == 5 )
+            {
+                v_int32x4 k1 = v_setall_s32(kx[1]), k2 = v_setall_s32(kx[2]);
+
+                for( ; i <= width - 16; i += 16, src += 16 )
+                {
+                    v_uint8x16 v_uc_x0, v_uc_x1, v_uc_x2, v_uc_x3, v_uc_x4;
+                    v_uint16x8 v_us_x0, v_us_x1, v_us_x2, v_us_x3, v_us_x4, v_us_y0, v_us_y1, v_us_y2, v_us_y3, v_us_y4;
+                    v_uint32x4 v_ui_x0, v_ui_x1, v_ui_x2, v_ui_x3, v_ui_x4, v_ui_y0, v_ui_y1, v_ui_y2, v_ui_y3, v_ui_y4;
+                    v_int32x4 v_s_x0, v_s_y0;
+                    v_uc_x0 = v_load(src + cn*2);
+                    v_uc_x1 = v_load(src + cn);
+                    v_uc_x2 = v_load(src - cn);
+                    v_uc_x3 = v_load(src - cn*2);
+
+                    v_expand(v_uc_x0, v_us_x0, v_us_y0);
+                    v_expand(v_uc_x1, v_us_x1, v_us_y1);
+                    v_expand(v_uc_x2, v_us_x2, v_us_y2);
+                    v_expand(v_uc_x3, v_us_x3, v_us_y3);
+
+                    v_expand(v_us_x0, v_ui_x0, v_ui_y0);
+                    v_expand(v_us_x1, v_ui_x1, v_ui_y1);
+                    v_expand(v_us_x2, v_ui_x2, v_ui_y2);
+                    v_expand(v_us_x3, v_ui_x3, v_ui_y3);
+
+                    v_s_x0 = (v_reinterpret_as_s32(v_ui_x1) - v_reinterpret_as_s32(v_ui_x2)) * k1;
+                    v_s_y0 = (v_reinterpret_as_s32(v_ui_y1) - v_reinterpret_as_s32(v_ui_y2)) * k1;
+                    v_s_x0 = (v_reinterpret_as_s32(v_ui_x0) - v_reinterpret_as_s32(v_ui_x3)) * k2 + v_s_x0;
+                    v_s_y0 = (v_reinterpret_as_s32(v_ui_y0) - v_reinterpret_as_s32(v_ui_y3)) * k2 + v_s_y0;
+
+                    v_store(dst + i, v_s_x0);
+                    v_store(dst + i + 4, v_s_y0);
+
+                    v_expand(v_us_y0, v_ui_x0, v_ui_y0);
+                    v_expand(v_us_y1, v_ui_x1, v_ui_y1);
+                    v_expand(v_us_y2, v_ui_x2, v_ui_y2);
+                    v_expand(v_us_y3, v_ui_x3, v_ui_y3);
+
+                    v_s_x0 = (v_reinterpret_as_s32(v_ui_x1) - v_reinterpret_as_s32(v_ui_x2)) * k1;
+                    v_s_y0 = (v_reinterpret_as_s32(v_ui_y1) - v_reinterpret_as_s32(v_ui_y2)) * k1;
+                    v_s_x0 = (v_reinterpret_as_s32(v_ui_x0) - v_reinterpret_as_s32(v_ui_x3)) * k2 + v_s_x0;
+                    v_s_y0 = (v_reinterpret_as_s32(v_ui_y0) - v_reinterpret_as_s32(v_ui_y3)) * k2 + v_s_y0;
+
+                    v_store(dst + i + 8, v_s_x0);
+                    v_store(dst + i + 12, v_s_y0);
+                }
+            }
+        }
+
+        src -= (_ksize/2)*cn;
+        kx -= _ksize/2;
+        for( ; i <= width - 4; i += 4, src += 4 )
+        {
+            v_int32x4 s0 = v_setall_s32(0);
+
+            for( k = j = 0; k < _ksize; k++, j += cn )
+            {
+                v_int32x4 f = v_setall_s32(kx[k]);
+                v_int32x4 x0;
+                v_uint8x16 v_uc_x0;
+                v_uint16x8 v_us_x0, v_us_y0;
+                v_uint32x4 v_ui_x0, v_ui_y0;
+
+                v_uc_x0 = v_load(src + j);
+                v_expand(v_uc_x0, v_us_x0, v_us_y0);
+                v_expand(v_us_x0, v_ui_x0, v_ui_y0);
+                x0 = v_reinterpret_as_s32(v_ui_x0) * f ;
+                s0 = s0 + x0;
+            }
+            v_store(dst + i, s0);
+        }
+
+        return i;
+    }
+
+    Mat kernel;
+    int symmetryType;
+    bool smallValues;
+};
+
+struct SymmColumnVec_32s8u
+{
+    SymmColumnVec_32s8u() { symmetryType=0; delta = 0; }
+    SymmColumnVec_32s8u(const Mat& _kernel, int _symmetryType, int _bits, double _delta)
+    {
+        symmetryType = _symmetryType;
+        _kernel.convertTo(kernel, CV_32F, 1./(1 << _bits), 0);
+        delta = (float)(_delta/(1 << _bits));
+        CV_Assert( (symmetryType & (KERNEL_SYMMETRICAL | KERNEL_ASYMMETRICAL)) != 0 );
+    }
+
+    int operator()(const uchar** _src, uchar* dst, int width) const
+    {
+        int ksize2 = (kernel.rows + kernel.cols - 1)/2;
+        const float* ky = kernel.ptr<float>() + ksize2;
+        int i = 0, k;
+        bool symmetrical = (symmetryType & KERNEL_SYMMETRICAL) != 0;
+        const int** src = (const int**)_src;
+        const int *S, *S2;
+        v_float32x4 d4 = v_setall_f32(delta);
+
+        if( symmetrical )
+        {
+            for( ; i <= width - 16; i += 16 )
+            {
+                v_float32x4 f = v_setall_f32(*ky);
+                v_float32x4 s0, s1, s2, s3;
+                v_int32x4 x0, x1;
+                S = (const int*)(src[0] + i);
+                s0 = v_cvt_f32(v_load(S));
+                s1 = v_cvt_f32(v_load(S+4));
+                s0 = v_muladd(s0, f, d4);
+                s1 = v_muladd(s1, f, d4);
+                s2 = v_cvt_f32(v_load(S+8));
+                s3 = v_cvt_f32(v_load(S+12));
+                s2 = v_muladd(s2, f, d4);
+                s3 = v_muladd(s3, f, d4);
+
+                for( k = 1; k <= ksize2; k++ )
+                {
+                    S = (const int*)(src[k] + i);
+                    S2 = (const int*)(src[-k] + i);
+                    f = v_setall_f32(*(ky+k));
+                    x0 = v_load(S) + v_load(S2);
+                    x1 = v_load(S+4) + v_load(S2+4);
+                    s0 = v_muladd(v_cvt_f32(x0), f, s0);
+                    s1 = v_muladd(v_cvt_f32(x1), f, s1);
+                    x0 = v_load(S+8) + v_load(S2+8);
+                    x1 = v_load(S+12) + v_load(S2+12);
+                    s2 = v_muladd(v_cvt_f32(x0), f, s2);
+                    s3 = v_muladd(v_cvt_f32(x1), f, s3);
+                }
+
+                v_int16x8 v_h = v_pack(v_round(s0), v_round(s1));
+                v_int16x8 v_l = v_pack(v_round(s2), v_round(s3));
+                v_store(dst + i, v_pack_u(v_h, v_l));
+            }
+
+            if( i <= width - 8 )
+            {
+                v_float32x4 f = v_setall_f32(*ky);
+                v_float32x4 s0, s1;
+                v_int32x4 x0, x1;
+                S = (const int*)(src[0] + i);
+                s0 = v_cvt_f32(v_load(S));
+                s1 = v_cvt_f32(v_load(S+4));
+                s0 = v_muladd(s0, f, d4);
+                s1 = v_muladd(s1, f, d4);
+
+                for( k = 1; k <= ksize2; k++ )
+                {
+                    S = (const int*)(src[k] + i);
+                    S2 = (const int*)(src[-k] + i);
+                    f = v_setall_f32(*(ky+k));
+                    x0 = v_load(S) + v_load(S2);
+                    x1 = v_load(S+4) + v_load(S2+4);
+                    s0 = v_muladd(v_cvt_f32(x0), f, s0);
+                    s1 = v_muladd(v_cvt_f32(x1), f, s1);
+                }
+
+                v_int16x8 v_h = v_pack(v_round(s0), v_round(s1));
+                v_store_low(dst + i, v_pack_u(v_h, v_h));
+                i += 8;
+            }
+        }
+        else
+        {
+            for( ; i <= width - 16; i += 16 )
+            {
+                v_float32x4 f, s0 = d4, s1 = d4, s2 = d4, s3 = d4;
+                v_int32x4 x0, x1;
+
+                for( k = 1; k <= ksize2; k++ )
+                {
+                    S = (const int*)(src[k] + i);
+                    S2 = (const int*)(src[-k] + i);
+                    f = v_setall_f32(*(ky+k));
+                    x0 = v_load(S) - v_load(S2);
+                    x1 = v_load(S+4) - v_load(S2+4);
+                    s0 = v_muladd(v_cvt_f32(x0), f, s0);
+                    s1 = v_muladd(v_cvt_f32(x1), f, s1);
+                    x0 = v_load(S+8) - v_load(S2+8);
+                    x1 = v_load(S+12) - v_load(S2+12);
+                    s2 = v_muladd(v_cvt_f32(x0), f, s2);
+                    s3 = v_muladd(v_cvt_f32(x1), f, s3);
+                }
+
+                v_int16x8 v_h = v_pack(v_round(s0), v_round(s1));
+                v_int16x8 v_l = v_pack(v_round(s2), v_round(s3));
+                v_store(dst + i, v_pack_u(v_h, v_l));
+            }
+
+            for( ; i <= width - 4; i += 4 )
+            {
+                v_float32x4 f, s0 = d4, s1 = d4;
+                v_int32x4 x0, x1;
+
+                for( k = 1; k <= ksize2; k++ )
+                {
+                    S = (const int*)(src[k] + i);
+                    S2 = (const int*)(src[-k] + i);
+                    f = v_setall_f32(*(ky+k));
+                    x0 = v_load(S) - v_load(S2);
+                    x1 = v_load(S+4) - v_load(S2+4);
+                    s0 = v_muladd(v_cvt_f32(x0), f, s0);
+                    s1 = v_muladd(v_cvt_f32(x1), f, s1);
+                }
+
+                v_int16x8 v_h = v_pack(v_round(s0), v_round(s1));
+                v_store_low(dst + i, v_pack_u(v_h, v_h));
+            }
+        }
+
+        return i;
+    }
+
+    int symmetryType;
+    float delta;
+    Mat kernel;
+};
+
+struct SymmColumnSmallVec_32s16s
+{
+    SymmColumnSmallVec_32s16s() { symmetryType=0; delta = 0; }
+    SymmColumnSmallVec_32s16s(const Mat& _kernel, int _symmetryType, int _bits, double _delta)
+    {
+        symmetryType = _symmetryType;
+        _kernel.convertTo(kernel, CV_32F, 1./(1 << _bits), 0);
+        delta = (float)(_delta/(1 << _bits));
+        CV_Assert( (symmetryType & (KERNEL_SYMMETRICAL | KERNEL_ASYMMETRICAL)) != 0 );
+    }
+
+    int operator()(const uchar** _src, uchar* _dst, int width) const
+    {
+        int ksize2 = (kernel.rows + kernel.cols - 1)/2;
+        const float* ky = kernel.ptr<float>() + ksize2;
+        int i = 0;
+        bool symmetrical = (symmetryType & KERNEL_SYMMETRICAL) != 0;
+        const int** src = (const int**)_src;
+        const int *S0 = src[-1], *S1 = src[0], *S2 = src[1];
+        short* dst = (short*)_dst;
+        v_float32x4 df4 = v_setall_f32(delta);
+        v_int32x4 d4 = v_round(df4);
+
+        if( symmetrical )
+        {
+            if( ky[0] == 2 && ky[1] == 1 )
+            {
+                for( ; i <= width - 8; i += 8 )
+                {
+                    v_int32x4 s0, s1, s2, s3, s4, s5;
+                    s0 = v_load(S0 + i);
+                    s1 = v_load(S0 + i + 4);
+                    s2 = v_load(S1 + i);
+                    s3 = v_load(S1 + i + 4);
+                    s4 = v_load(S2 + i);
+                    s5 = v_load(S2 + i + 4);
+                    s0 = s0 + (s2 + s2) + s4;
+                    s1 = s1 + (s3 + s3) + s5;
+                    s0 = s0 + d4;
+                    s1 = s1 + d4;
+                    v_store(dst + i, v_pack(s0, s1));
+                }
+            }
+            else if( ky[0] == -2 && ky[1] == 1 )
+            {
+                for( ; i <= width - 8; i += 8 )
+                {
+                    v_int32x4 s0, s1, s2, s3, s4, s5;
+                    s0 = v_load(S0 + i);
+                    s1 = v_load(S0 + i + 4);
+                    s2 = v_load(S1 + i);
+                    s3 = v_load(S1 + i + 4);
+                    s4 = v_load(S2 + i);
+                    s5 = v_load(S2 + i + 4);
+                    s0 = s0 + s4 - (s2 + s2);
+                    s1 = s1 + s5 - (s3 + s3);
+                    s0 = s0 + d4;
+                    s1 = s1 + d4;
+                    v_store(dst + i, v_pack(s0, s1));
+                }
+            }
+            else
+            {
+                v_float32x4 k0 = v_setall_f32(ky[0]), k1 = v_setall_f32(ky[1]);
+                for( ; i <= width - 8; i += 8 )
+                {
+                    v_float32x4 s0, s1;
+                    s0 = v_cvt_f32(v_load(S1 + i));
+                    s1 = v_cvt_f32(v_load(S1 + i + 4));
+                    s0 = v_muladd(s0, k0, df4);
+                    s1 = v_muladd(s1, k0, df4);
+                    v_int32x4 x0, x1;
+                    x0 = v_load(S0 + i) + v_load(S2 + i);
+                    x1 = v_load(S0 + i + 4) + v_load(S2 + i + 4);
+                    s0 = v_muladd(v_cvt_f32(x0), k1, s0);
+                    s1 = v_muladd(v_cvt_f32(x1), k1, s1);
+                    v_store(dst + i, v_pack(v_round(s0), v_round(s1)));
+                }
+            }
+        }
+        else
+        {
+            if( fabs(ky[1]) == 1 && ky[1] == -ky[-1] )
+            {
+                if( ky[1] < 0 )
+                    std::swap(S0, S2);
+                for( ; i <= width - 8; i += 8 )
+                {
+                    v_int32x4 s0, s1, s2, s3;
+                    s0 = v_load(S2 + i);
+                    s1 = v_load(S2 + i + 4);
+                    s2 = v_load(S0 + i);
+                    s3 = v_load(S0 + i + 4);
+                    s0 = (s0 - s2) + d4;
+                    s1 = (s1 - s3) + d4;
+                    v_store(dst + i, v_pack(s0, s1));
+                }
+            }
+            else
+            {
+                v_float32x4 k1 = v_setall_f32(ky[1]);
+                for( ; i <= width - 8; i += 8 )
+                {
+                    v_float32x4 s0 = df4, s1 = df4;
+                    v_int32x4 x0, x1;
+                    x0 = v_load(S2 + i) - v_load(S0 + i);
+                    x1 = v_load(S2 + i + 4) - v_load(S0 + i + 4);
+                    s0 = v_muladd(v_cvt_f32(x0), k1, s0);
+                    s1 = v_muladd(v_cvt_f32(x1), k1, s1);
+                    v_store(dst + i, v_pack(v_round(s0), v_round(s1)));
+                }
+            }
+        }
+
+        return i;
+    }
+
+    int symmetryType;
+    float delta;
+    Mat kernel;
+};
+
+/////////////////////////////////////// 16s //////////////////////////////////
+
+struct RowVec_16s32f
+{
+    RowVec_16s32f() { }
+    RowVec_16s32f( const Mat& _kernel ) { kernel = _kernel; }
+
+    int operator()(const uchar* _src, uchar* _dst, int width, int cn) const
+    {
+        int i = 0, k, _ksize = kernel.rows + kernel.cols - 1;
+        float* dst = (float*)_dst;
+        const float* _kx = kernel.ptr<float>();
+        width *= cn;
+
+        for( ; i <= width - 8; i += 8 )
+        {
+            const short* src = (const short*)_src + i;
+            v_float32x4 f, s0 = v_setall_f32(0.0f), s1 = s0, x0, x1;
+            for( k = 0; k < _ksize; k++, src += cn )
+            {
+                f = v_setall_f32(*(_kx+k));
+
+                v_int16x8 v_s = v_load(src);
+                v_int32x4 v_i1, v_i2;
+                v_expand(v_s, v_i1, v_i2);
+
+                x0 = v_cvt_f32(v_i1);
+                x1 = v_cvt_f32(v_i2);
+                s0 = v_muladd(x0, f, s0);
+                s1 = v_muladd(x1, f, s1);
+            }
+            v_store(dst + i, s0);
+            v_store(dst + i + 4, s1);
+        }
+        return i;
+    }
+
+    Mat kernel;
+};
+
+struct SymmColumnVec_32f16s
+{
+    SymmColumnVec_32f16s() { symmetryType=0; delta = 0; }
+    SymmColumnVec_32f16s(const Mat& _kernel, int _symmetryType, int, double _delta)
+    {
+        symmetryType = _symmetryType;
+        kernel = _kernel;
+        delta = (float)_delta;
+        CV_Assert( (symmetryType & (KERNEL_SYMMETRICAL | KERNEL_ASYMMETRICAL)) != 0 );
+    }
+
+    int operator()(const uchar** _src, uchar* _dst, int width) const
+    {
+        int ksize2 = (kernel.rows + kernel.cols - 1)/2;
+        const float* ky = kernel.ptr<float>() + ksize2;
+        int i = 0, k;
+        bool symmetrical = (symmetryType & KERNEL_SYMMETRICAL) != 0;
+        const float** src = (const float**)_src;
+        const float *S, *S2;
+        short* dst = (short*)_dst;
+        v_float32x4 d4 = v_setall_f32(delta);
+
+        if( symmetrical )
+        {
+            for( ; i <= width - 16; i += 16 )
+            {
+                v_float32x4 f = v_setall_f32(*ky);
+                v_float32x4 s0, s1, s2, s3;
+                v_float32x4 x0, x1;
+                S = src[0] + i;
+                s0 = v_load(S);
+                s1 = v_load(S+4);
+                s0 = v_muladd(s0, f, d4);
+                s1 = v_muladd(s1, f, d4);
+                s2 = v_load(S+8);
+                s3 = v_load(S+12);
+                s2 = v_muladd(s2, f, d4);
+                s3 = v_muladd(s3, f, d4);
+
+                for( k = 1; k <= ksize2; k++ )
+                {
+                    S = src[k] + i;
+                    S2 = src[-k] + i;
+                    f = v_setall_f32(*(ky+k));
+                    x0 = v_load(S) + v_load(S2);
+                    x1 = v_load(S+4) + v_load(S2+4);
+                    s0 = v_muladd(x0, f, s0);
+                    s1 = v_muladd(x1, f, s1);
+                    x0 = v_load(S+8) + v_load(S2+8);
+                    x1 = v_load(S+12) + v_load(S2+12);
+                    s2 = v_muladd(x0, f, s2);
+                    s3 = v_muladd(x1, f, s3);
+                }
+
+                v_int32x4 s0i = v_round(s0);
+                v_int32x4 s1i = v_round(s1);
+                v_int32x4 s2i = v_round(s2);
+                v_int32x4 s3i = v_round(s3);
+
+                v_store(dst + i, v_pack(s0i, s1i));
+                v_store(dst + i + 8, v_pack(s2i, s3i));
+            }
+
+            for( ; i <= width - 4; i += 4 )
+            {
+                v_float32x4 f = v_setall_f32(*ky);
+                v_float32x4 x0, s0 = v_load(src[0] + i);
+                s0 = v_muladd(s0, f, d4);
+
+                for( k = 1; k <= ksize2; k++ )
+                {
+                    f = v_setall_f32(*(ky+k));
+                    S = src[k] + i;
+                    S2 = src[-k] + i;
+                    x0 = v_load(src[k]+i) + v_load(src[-k] + i);
+                    s0 = v_muladd(x0, f, s0);
+                }
+
+                v_int32x4 s0i = v_round(s0);
+                v_store_low(dst + i, v_pack(s0i, s0i));
+            }
+        }
+        else
+        {
+            for( ; i <= width - 16; i += 16 )
+            {
+                v_float32x4 f, s0 = d4, s1 = d4, s2 = d4, s3 = d4;
+                v_float32x4 x0, x1;
+                S = src[0] + i;
+
+                for( k = 1; k <= ksize2; k++ )
+                {
+                    S = src[k] + i;
+                    S2 = src[-k] + i;
+                    f = v_setall_f32(*(ky+k));
+                    x0 = v_load(S) - v_load(S2);
+                    x1 = v_load(S+4) - v_load(S2+4);
+                    s0 = v_muladd(x0, f, s0);
+                    s1 = v_muladd(x1, f, s1);
+                    x0 = v_load(S+8) - v_load(S2+8);
+                    x1 = v_load(S+12) - v_load(S2+12);
+                    s2 = v_muladd(x0, f, s2);
+                    s3 = v_muladd(x1, f, s3);
+                }
+
+                v_int32x4 s0i = v_round(s0);
+                v_int32x4 s1i = v_round(s1);
+                v_int32x4 s2i = v_round(s2);
+                v_int32x4 s3i = v_round(s3);
+
+                v_store(dst + i, v_pack(s0i, s1i));
+                v_store(dst + i + 8, v_pack(s2i, s3i));
+            }
+
+            for( ; i <= width - 4; i += 4 )
+            {
+                v_float32x4 f, x0, s0 = d4;
+
+                for( k = 1; k <= ksize2; k++ )
+                {
+                    f = v_setall_f32(*(ky+k));
+                    x0 = v_load(src[k]+i) - v_load(src[-k] + i);
+                    s0 = v_muladd(x0, f, s0);
+                }
+
+                v_int32x4 s0i = v_round(s0);
+                v_store_low(dst + i, v_pack(s0i, s0i));
+            }
+        }
+
+        return i;
+    }
+
+    int symmetryType;
+    float delta;
+    Mat kernel;
+};
+
+/////////////////////////////////////// 32f //////////////////////////////////
+
+struct RowVec_32f
+{
+    RowVec_32f() { }
+
+    RowVec_32f( const Mat& _kernel ) { kernel = _kernel; }
+
+    int operator()(const uchar* _src, uchar* _dst, int width, int cn) const
+    {
+        int _ksize = kernel.rows + kernel.cols - 1;
+        const float* src0 = (const float*)_src;
+        float* dst = (float*)_dst;
+        const float* _kx = kernel.ptr<float>();
+
+        int i = 0, k;
+        width *= cn;
+
+        for( ; i <= width - 8; i += 8 )
+        {
+            const float* src = src0 + i;
+            v_float32x4 f, s0 = v_setall_f32(0.0f), s1 = s0, x0, x1;
+            for( k = 0; k < _ksize; k++, src += cn )
+            {
+                f = v_setall_f32(_kx[k]);
+
+                x0 = v_load(src);
+                x1 = v_load(src + 4);
+                s0 = v_muladd(x0, f, s0);
+                s1 = v_muladd(x1, f, s1);
+            }
+            v_store(dst + i, s0);
+            v_store(dst + i + 4, s1);
+        }
+        return i;
+    }
+
+    Mat kernel;
+};
+
+struct SymmRowSmallVec_32f
+{
+    SymmRowSmallVec_32f() { symmetryType = 0; }
+    SymmRowSmallVec_32f( const Mat& _kernel, int _symmetryType )
+    {
+        kernel = _kernel;
+        symmetryType = _symmetryType;
+    }
+
+    int operator()(const uchar* _src, uchar* _dst, int width, int cn) const
+    {
+        int i = 0, _ksize = kernel.rows + kernel.cols - 1;
+        float* dst = (float*)_dst;
+        const float* src = (const float*)_src + (_ksize/2)*cn;
+        bool symmetrical = (symmetryType & KERNEL_SYMMETRICAL) != 0;
+        const float* kx = kernel.ptr<float>() + _ksize/2;
+        width *= cn;
+
+        if( symmetrical )
+        {
+            if( _ksize == 1 )
+                return 0;
+            if( _ksize == 3 )
+            {
+                if( kx[0] == 2 && kx[1] == 1 )
+                    for( ; i <= width - 8; i += 8, src += 8 )
+                    {
+                        v_float32x4 x0, x1, x2, y0, y1, y2;
+                        x0 = v_load(src - cn);
+                        x1 = v_load(src);
+                        x2 = v_load(src + cn);
+                        y0 = v_load(src - cn + 4);
+                        y1 = v_load(src + 4);
+                        y2 = v_load(src + cn + 4);
+                        x0 = x0 + ((x1 + x1) + x2);
+                        y0 = y0 + ((y1 + y1) + y2);
+                        v_store(dst + i, x0);
+                        v_store(dst + i + 4, y0);
+                    }
+                else if( kx[0] == -2 && kx[1] == 1 )
+                    for( ; i <= width - 8; i += 8, src += 8 )
+                    {
+                        v_float32x4 x0, x1, x2, y0, y1, y2;
+                        x0 = v_load(src - cn);
+                        x1 = v_load(src);
+                        x2 = v_load(src + cn);
+                        y0 = v_load(src - cn + 4);
+                        y1 = v_load(src + 4);
+                        y2 = v_load(src + cn + 4);
+                        x0 = x0 + (x2 - (x1 + x1));
+                        y0 = y0 + (y2 - (y1 + y1));
+                        v_store(dst + i, x0);
+                        v_store(dst + i + 4, y0);
+                    }
+                else
+                {
+                    v_float32x4 k0 = v_setall_f32(kx[0]), k1 = v_setall_f32(kx[1]);
+                    for( ; i <= width - 8; i += 8, src += 8 )
+                    {
+                        v_float32x4 x0, x1, x2, y0, y1, y2;
+                        x0 = v_load(src - cn);
+                        x1 = v_load(src);
+                        x2 = v_load(src + cn);
+                        y0 = v_load(src - cn + 4);
+                        y1 = v_load(src + 4);
+                        y2 = v_load(src + cn + 4);
+
+                        x0 = (x0 + x2) * k1;
+                        y0 = (y0 + y2) * k1;
+                        x0 = v_muladd(x1, k0, x0);
+                        y0 = v_muladd(y1, k0, y0);
+                        v_store(dst + i, x0);
+                        v_store(dst + i + 4, y0);
+                    }
+                }
+            }
+            else if( _ksize == 5 )
+            {
+                if( kx[0] == -2 && kx[1] == 0 && kx[2] == 1 )
+                    for( ; i <= width - 8; i += 8, src += 8 )
+                    {
+                        v_float32x4 x0, x1, x2, y0, y1, y2;
+                        x0 = v_load(src - cn*2);
+                        x1 = v_load(src);
+                        x2 = v_load(src + cn*2);
+                        y0 = v_load(src - cn*2 + 4);
+                        y1 = v_load(src + 4);
+                        y2 = v_load(src + cn*2 + 4);
+                        x0 = x0 + x2 - (x1 + x1);
+                        y0 = y0 + y2 - (y1 + y1);
+                        v_store(dst + i, x0);
+                        v_store(dst + i + 4, y0);
+                    }
+                else
+                {
+                    v_float32x4 k0 = v_setall_f32(kx[0]), k1 = v_setall_f32(kx[1]), k2 = v_setall_f32(kx[2]);
+                    for( ; i <= width - 8; i += 8, src += 8 )
+                    {
+                        v_float32x4 x0, x1, x2, y0, y1, y2;
+                        x0 = v_load(src - cn);
+                        x1 = v_load(src);
+                        x2 = v_load(src + cn);
+                        y0 = v_load(src - cn + 4);
+                        y1 = v_load(src + 4);
+                        y2 = v_load(src + cn + 4);
+
+                        x0 = (x0 + x2) * k1;
+                        y0 = (y0 + y2) * k1;
+                        x0 = v_muladd(x1, k0, x0);
+                        y0 = v_muladd(y1, k0, y0);
+
+                        x2 = v_load(src + cn*2) + v_load(src - cn*2);
+                        y2 = v_load(src + cn*2 + 4) + v_load(src - cn*2 + 4);
+                        x0 = v_muladd(x2, k2, x0);
+                        y0 = v_muladd(y2, k2, y0);
+
+                        v_store(dst + i, x0);
+                        v_store(dst + i + 4, y0);
+                    }
+                }
+            }
+        }
+        else
+        {
+            if( _ksize == 3 )
+            {
+                if( kx[0] == 0 && kx[1] == 1 )
+                    for( ; i <= width - 8; i += 8, src += 8 )
+                    {
+                        v_float32x4 x0, x2, y0, y2;
+                        x0 = v_load(src + cn);
+                        x2 = v_load(src - cn);
+                        y0 = v_load(src + cn + 4);
+                        y2 = v_load(src - cn + 4);
+                        x0 = x0 - x2;
+                        y0 = y0 - y2;
+                        v_store(dst + i, x0);
+                        v_store(dst + i + 4, y0);
+                    }
+                else
+                {
+                    v_float32x4 k1 = v_setall_f32(kx[1]);
+                    for( ; i <= width - 8; i += 8, src += 8 )
+                    {
+                        v_float32x4 x0, x2, y0, y2;
+                        x0 = v_load(src + cn);
+                        x2 = v_load(src - cn);
+                        y0 = v_load(src + cn + 4);
+                        y2 = v_load(src - cn + 4);
+
+                        x0 = (x0 - x2) * k1;
+                        y0 = (y0 - y2) * k1;
+                        v_store(dst + i, x0);
+                        v_store(dst + i + 4, y0);
+                    }
+                }
+            }
+            else if( _ksize == 5 )
+            {
+                v_float32x4 k1 = v_setall_f32(kx[1]), k2 = v_setall_f32(kx[2]);
+                for( ; i <= width - 8; i += 8, src += 8 )
+                {
+                    v_float32x4 x0, x2, y0, y2;
+                    x0 = v_load(src + cn);
+                    x2 = v_load(src - cn);
+                    y0 = v_load(src + cn + 4);
+                    y2 = v_load(src - cn + 4);
+
+                    x0 = (x0 - x2) * k1;
+                    y0 = (y0 - y2) * k1;
+
+                    x2 = v_load(src + cn*2) - v_load(src - cn*2);
+                    y2 = v_load(src + cn*2 + 4) - v_load(src - cn*2 + 4);
+                    x0 = v_muladd(x2, k2, x0);
+                    y0 = v_muladd(y2, k2, y0);
+
+                    v_store(dst + i, x0);
+                    v_store(dst + i + 4, y0);
+                }
+            }
+        }
+
+        return i;
+    }
+
+    Mat kernel;
+    int symmetryType;
+};
+
+struct SymmColumnVec_32f
+{
+    SymmColumnVec_32f() { symmetryType=0; delta = 0; }
+    SymmColumnVec_32f(const Mat& _kernel, int _symmetryType, int, double _delta)
+    {
+        symmetryType = _symmetryType;
+        kernel = _kernel;
+        delta = (float)_delta;
+        CV_Assert( (symmetryType & (KERNEL_SYMMETRICAL | KERNEL_ASYMMETRICAL)) != 0 );
+    }
+
+    int operator()(const uchar** _src, uchar* _dst, int width) const
+    {
+        int ksize2 = (kernel.rows + kernel.cols - 1)/2;
+        const float* ky = kernel.ptr<float>() + ksize2;
+        int i = 0, k;
+        bool symmetrical = (symmetryType & KERNEL_SYMMETRICAL) != 0;
+        const float** src = (const float**)_src;
+        const float *S, *S2;
+        float* dst = (float*)_dst;
+
+        if( symmetrical )
+        {
+
+            const v_float32x4 d4 = v_setall_f32(delta);
+            for( ; i <= width - 16; i += 16 )
+            {
+                v_float32x4 f = v_setall_f32(ky[0]);
+                v_float32x4 s0, s1, s2, s3;
+                v_float32x4 x0, x1;
+                S = src[0] + i;
+                s0 = v_load(S);
+                s1 = v_load(S+4);
+                s0 = v_muladd(s0, f, d4);
+                s1 = v_muladd(s1, f, d4);
+                s2 = v_load(S+8);
+                s3 = v_load(S+12);
+                s2 = v_muladd(s2, f, d4);
+                s3 = v_muladd(s3, f, d4);
+
+                for( k = 1; k <= ksize2; k++ )
+                {
+                    S = src[k] + i;
+                    S2 = src[-k] + i;
+                    f = v_setall_f32(ky[k]);
+                    x0 = v_load(S) + v_load(S2);
+                    x1 = v_load(S+4) + v_load(S2+4);
+                    s0 = v_muladd(x0, f, s0);
+                    s1 = v_muladd(x1, f, s1);
+                    x0 = v_load(S+8) + v_load(S2+8);
+                    x1 = v_load(S+12) + v_load(S2+12);
+                    s2 = v_muladd(x0, f, s2);
+                    s3 = v_muladd(x1, f, s3);
+                }
+
+                v_store(dst + i, s0);
+                v_store(dst + i + 4, s1);
+                v_store(dst + i + 8, s2);
+                v_store(dst + i + 12, s3);
+            }
+
+            for( ; i <= width - 4; i += 4 )
+            {
+                v_float32x4 f = v_setall_f32(ky[0]);
+                v_float32x4 x0, s0 = v_load(src[0] + i);
+                s0 = v_muladd(s0, f, d4);
+
+                for( k = 1; k <= ksize2; k++ )
+                {
+                    f = v_setall_f32(ky[k]);
+                    S = src[k] + i;
+                    S2 = src[-k] + i;
+                    x0 = v_load(src[k]+i) + v_load(src[-k] + i);
+                    s0 = v_muladd(x0, f, s0);
+                }
+
+                v_store(dst + i, s0);
+            }
+        }
+        else
+        {
+            const v_float32x4 d4 = v_setall_f32(delta);
+            for( ; i <= width - 16; i += 16 )
+            {
+                v_float32x4 f, s0 = d4, s1 = d4, s2 = d4, s3 = d4;
+                v_float32x4 x0, x1;
+                S = src[0] + i;
+
+                for( k = 1; k <= ksize2; k++ )
+                {
+                    S = src[k] + i;
+                    S2 = src[-k] + i;
+                    f = v_setall_f32(ky[k]);
+                    x0 = v_load(S) - v_load(S2);
+                    x1 = v_load(S+4) - v_load(S2+4);
+                    s0 = v_muladd(x0, f, s0);
+                    s1 = v_muladd(x1, f, s1);
+                    x0 = v_load(S+8) - v_load(S2+8);
+                    x1 = v_load(S+12) - v_load(S2+12);
+                    s2 = v_muladd(x0, f, s2);
+                    s3 = v_muladd(x1, f, s3);
+                }
+
+                v_store(dst + i, s0);
+                v_store(dst + i + 4, s1);
+                v_store(dst + i + 8, s2);
+                v_store(dst + i + 12, s3);
+            }
+
+            for( ; i <= width - 4; i += 4 )
+            {
+                v_float32x4 f, x0, s0 = d4;
+
+                for( k = 1; k <= ksize2; k++ )
+                {
+                    f = v_setall_f32(ky[k]);
+                    x0 = v_load(src[k]+i) - v_load(src[-k] + i);
+                    s0 = v_muladd(x0, f, s0);
+                }
+
+                v_store(dst + i, s0);
+            }
+        }
+
+        return i;
+    }
+
+    int symmetryType;
+    float delta;
+    Mat kernel;
+};
+
+struct SymmColumnSmallVec_32f
+{
+    SymmColumnSmallVec_32f() { symmetryType=0; delta = 0; }
+    SymmColumnSmallVec_32f(const Mat& _kernel, int _symmetryType, int, double _delta)
+    {
+        symmetryType = _symmetryType;
+        kernel = _kernel;
+        delta = (float)_delta;
+        CV_Assert( (symmetryType & (KERNEL_SYMMETRICAL | KERNEL_ASYMMETRICAL)) != 0 );
+    }
+
+    int operator()(const uchar** _src, uchar* _dst, int width) const
+    {
+        int ksize2 = (kernel.rows + kernel.cols - 1)/2;
+        const float* ky = kernel.ptr<float>() + ksize2;
+        int i = 0;
+        bool symmetrical = (symmetryType & KERNEL_SYMMETRICAL) != 0;
+        const float** src = (const float**)_src;
+        const float *S0 = src[-1], *S1 = src[0], *S2 = src[1];
+        float* dst = (float*)_dst;
+        v_float32x4 d4 = v_setall_f32(delta);
+
+        if( symmetrical )
+        {
+            if( ky[0] == 2 && ky[1] == 1 )
+            {
+                for( ; i <= width - 8; i += 8 )
+                {
+                    v_float32x4 s0, s1, s2, s3, s4, s5;
+                    s0 = v_load(S0 + i);
+                    s1 = v_load(S0 + i + 4);
+                    s2 = v_load(S1 + i);
+                    s3 = v_load(S1 + i + 4);
+                    s4 = v_load(S2 + i);
+                    s5 = v_load(S2 + i + 4);
+                    s0 = s0 + (s2 + s2) + s4;
+                    s1 = s1 + (s3 + s3) + s5;
+                    s0 = s0 + d4;
+                    s1 = s1 + d4;
+                    v_store(dst + i, s0);
+                    v_store(dst + i + 4, s1);
+                }
+            }
+            else if( ky[0] == -2 && ky[1] == 1 )
+            {
+                for( ; i <= width - 8; i += 8 )
+                {
+                    v_float32x4 s0, s1, s2, s3, s4, s5;
+                    s0 = v_load(S0 + i);
+                    s1 = v_load(S0 + i + 4);
+                    s2 = v_load(S1 + i);
+                    s3 = v_load(S1 + i + 4);
+                    s4 = v_load(S2 + i);
+                    s5 = v_load(S2 + i + 4);
+                    s0 = s0 + s4 - (s2 + s2);
+                    s1 = s1 + s5 - (s3 + s3);
+                    s0 = s0 + d4;
+                    s1 = s1 + d4;
+                    v_store(dst + i, s0);
+                    v_store(dst + i + 4, s1);
+                }
+            }
+            else
+            {
+                v_float32x4 k0 = v_setall_f32(ky[0]), k1 = v_setall_f32(ky[1]);
+                for( ; i <= width - 8; i += 8 )
+                {
+                    v_float32x4 s0, s1, x0, x1;
+                    s0 = v_load(S1 + i);
+                    s1 = v_load(S1 + i + 4);
+                    s0 = v_muladd(s0, k0, d4);
+                    s1 = v_muladd(s1, k0, d4);
+                    x0 = v_load(S0 + i) + v_load(S2 + i);
+                    x1 = v_load(S0 + i + 4) + v_load(S2 + i + 4);
+                    s0 = v_muladd(x0, k1, s0);
+                    s1 = v_muladd(x1, k1, s1);
+                    v_store(dst + i, s0);
+                    v_store(dst + i + 4, s1);
+                }
+            }
+        }
+        else
+        {
+            if( fabs(ky[1]) == 1 && ky[1] == -ky[-1] )
+            {
+                if( ky[1] < 0 )
+                    std::swap(S0, S2);
+                for( ; i <= width - 8; i += 8 )
+                {
+                    v_float32x4 s0, s1, s2, s3;
+                    s0 = v_load(S2 + i);
+                    s1 = v_load(S2 + i + 4);
+                    s2 = v_load(S0 + i);
+                    s3 = v_load(S0 + i + 4);
+                    s0 = (s0 - s2) + d4;
+                    s1 = (s1 - s3) + d4;
+                    v_store(dst + i, s0);
+                    v_store(dst + i + 4, s1);
+                }
+            }
+            else
+            {
+                v_float32x4 k1 = v_setall_f32(ky[1]);
+                for( ; i <= width - 8; i += 8 )
+                {
+                    v_float32x4 s0 = d4, s1 = d4, x0, x1;
+                    x0 = v_load(S2 + i) - v_load(S0 + i);
+                    x1 = v_load(S2 + i + 4) - v_load(S0 + i + 4);
+                    s0 = v_muladd(x0, k1, s0);
+                    s1 = v_muladd(x1, k1, s1);
+                    v_store(dst + i, s0);
+                    v_store(dst + i + 4, s1);
+                }
+            }
+        }
+
+        return i;
+    }
+
+    int symmetryType;
+    float delta;
+    Mat kernel;
+};
+
+/////////////////////////////// non-separable filters ///////////////////////////////
+
+/////////////////////////////////// 8u<->8u, 8u<->16s /////////////////////////////////
+
+struct FilterVec_8u
+{
+    FilterVec_8u() { delta = 0; _nz = 0; }
+    FilterVec_8u(const Mat& _kernel, int _bits, double _delta)
+    {
+        Mat kernel;
+        _kernel.convertTo(kernel, CV_32F, 1./(1 << _bits), 0);
+        delta = (float)(_delta/(1 << _bits));
+        std::vector<Point> coords;
+        preprocess2DKernel(kernel, coords, coeffs);
+        _nz = (int)coords.size();
+    }
+
+    int operator()(const uchar** src, uchar* dst, int width) const
+    {
+        const float* kf = (const float*)&coeffs[0];
+        int i = 0, k, nz = _nz;
+        v_float32x4 d4 = v_setall_f32(delta);
+
+        for( ; i <= width - 16; i += 16 )
+        {
+            v_float32x4 s0 = d4, s1 = d4, s2 = d4, s3 = d4;
+            v_uint8x16 x_uc;
+            v_uint16x8 x_ush, x_usl;
+            v_uint32x4 x_uih1, x_uih2, x_uil1, x_uil2;
+
+            for( k = 0; k < nz; k++ )
+            {
+                v_float32x4 f = v_setall_f32(*(kf+k)), t0, t1;
+
+                x_uc = v_load(src[k] + i);
+                v_expand(x_uc, x_ush, x_usl);
+                v_expand(x_ush, x_uih1, x_uih2);
+                v_expand(x_usl, x_uil1, x_uil2);
+
+                t0 = v_cvt_f32(v_reinterpret_as_s32(x_uih1));
+                t1 = v_cvt_f32(v_reinterpret_as_s32(x_uih2));
+                s0 = v_muladd(t0, f, s0);
+                s1 = v_muladd(t1, f, s1);
+
+                t0 = v_cvt_f32(v_reinterpret_as_s32(x_uil1));
+                t1 = v_cvt_f32(v_reinterpret_as_s32(x_uil2));
+                s2 = v_muladd(t0, f, s2);
+                s3 = v_muladd(t1, f, s3);
+            }
+
+            x_ush = v_pack_u(v_round(s0), v_round(s1));
+            x_usl = v_pack_u(v_round(s2), v_round(s3));
+            x_uc = v_pack(x_ush, x_usl);
+            v_store(dst + i, x_uc);
+        }
+
+        return i;
+    }
+
+    int _nz;
+    std::vector<uchar> coeffs;
+    float delta;
+};
+
+struct FilterVec_8u16s
+{
+    FilterVec_8u16s() { delta = 0; _nz = 0; }
+    FilterVec_8u16s(const Mat& _kernel, int _bits, double _delta)
+    {
+        Mat kernel;
+        _kernel.convertTo(kernel, CV_32F, 1./(1 << _bits), 0);
+        delta = (float)(_delta/(1 << _bits));
+        std::vector<Point> coords;
+        preprocess2DKernel(kernel, coords, coeffs);
+        _nz = (int)coords.size();
+    }
+
+    int operator()(const uchar** src, uchar* _dst, int width) const
+    {
+        const float* kf = (const float*)&coeffs[0];
+        short* dst = (short*)_dst;
+        int i = 0, k, nz = _nz;
+        v_float32x4 d4 = v_setall_f32(delta);
+
+        for( ; i <= width - 16; i += 16 )
+        {
+            v_float32x4 s0 = d4, s1 = d4, s2 = d4, s3 = d4;
+            v_uint8x16 x_uc;
+            v_uint16x8 x_ush, x_usl;
+            v_int16x8  x_sh, x_sl;
+            v_uint32x4 x_uih1, x_uih2, x_uil1, x_uil2;
+
+            for( k = 0; k < nz; k++ )
+            {
+                v_float32x4 f = v_setall_f32(*(kf+k)), t0, t1;
+
+                x_uc = v_load(src[k] + i);
+                v_expand(x_uc, x_ush, x_usl);
+                v_expand(x_ush, x_uih1, x_uih2);
+                v_expand(x_usl, x_uil1, x_uil2);
+
+                t0 = v_cvt_f32(v_reinterpret_as_s32(x_uih1));
+                t1 = v_cvt_f32(v_reinterpret_as_s32(x_uih2));
+                s0 = v_muladd(t0, f, s0);
+                s1 = v_muladd(t1, f, s1);
+
+                t0 = v_cvt_f32(v_reinterpret_as_s32(x_uil1));
+                t1 = v_cvt_f32(v_reinterpret_as_s32(x_uil2));
+                s2 = v_muladd(t0, f, s2);
+                s3 = v_muladd(t1, f, s3);
+            }
+
+            x_sh = v_pack(v_round(s0), v_round(s1));
+            x_sl = v_pack(v_round(s2), v_round(s3));
+            v_store((short *)(dst + i), x_sh);
+            v_store((short *)(dst + i + 8), x_sl);
+        }
+
+        return i;
+    }
+
+    int _nz;
+    std::vector<uchar> coeffs;
+    float delta;
+};
+
+struct FilterVec_32f
+{
+    FilterVec_32f() { delta = 0; _nz = 0; }
+    FilterVec_32f(const Mat& _kernel, int, double _delta)
+    {
+        delta = (float)_delta;
+        std::vector<Point> coords;
+        preprocess2DKernel(_kernel, coords, coeffs);
+        _nz = (int)coords.size();
+    }
+
+    int operator()(const uchar** _src, uchar* _dst, int width) const
+    {
+        const float* kf = (const float*)&coeffs[0];
+        const float** src = (const float**)_src;
+        float* dst = (float*)_dst;
+        int i = 0, k, nz = _nz;
+        v_float32x4 d4 = v_setall_f32(delta);
+
+        for( ; i <= width - 16; i += 16 )
+        {
+            v_float32x4 s0 = d4, s1 = d4, s2 = d4, s3 = d4;
+
+            for( k = 0; k < nz; k++ )
+            {
+                v_float32x4 f, t0, t1;
+                f = v_setall_f32(*(kf+k));
+                const float* S = src[k] + i;
+
+                t0 = v_load(S);
+                t1 = v_load(S + 4);
+                s0 = v_muladd(t0, f, s0);
+                s1 = v_muladd(t1, f, s1);
+
+                t0 = v_load(S + 8);
+                t1 = v_load(S + 12);
+                s2 = v_muladd(t0, f, s2);
+                s3 = v_muladd(t1, f, s3);
+            }
+
+            v_store(dst + i, s0);
+            v_store(dst + i + 4, s1);
+            v_store(dst + i + 8, s2);
+            v_store(dst + i + 12, s3);
+        }
+
+        for( ; i <= width - 4; i += 4 )
+        {
+            v_float32x4 s0 = d4;
+
+            for( k = 0; k < nz; k++ )
+            {
+                v_float32x4 f, t0;
+                f = v_setall_f32(*(kf+k));
+                t0 = v_load(src[k] + i);
+                s0 = v_muladd(t0, f, s0);
+            }
+            v_store(dst + i, s0);
+        }
+
+        return i;
+    }
+
+    int _nz;
+    std::vector<uchar> coeffs;
+    float delta;
+};
 
 #else
 

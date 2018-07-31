@@ -298,6 +298,8 @@ OPENCV_HAL_IMPL_VSX_INTERLEAVE(uint, v_uint32x4)
 OPENCV_HAL_IMPL_VSX_INTERLEAVE(int, v_int32x4)
 OPENCV_HAL_IMPL_VSX_INTERLEAVE(float, v_float32x4)
 OPENCV_HAL_IMPL_VSX_INTERLEAVE(double, v_float64x2)
+OPENCV_HAL_IMPL_VSX_INTERLEAVE(int64, v_int64x2)
+OPENCV_HAL_IMPL_VSX_INTERLEAVE(uint64, v_uint64x2)
 
 /* Expand */
 #define OPENCV_HAL_IMPL_VSX_EXPAND(_Tpvec, _Tpwvec, _Tp, fl, fh)  \
@@ -392,6 +394,14 @@ inline void v_recombine(const _Tpvec& a, const _Tpvec& b, _Tpvec& c, _Tpvec& d)
     c.val = vec_mergesqh(a.val, b.val);
     d.val = vec_mergesql(a.val, b.val);
 }
+
+template <typename _Tpvec>
+inline _Tpvec v_combine_interleave_low(const _Tpvec& a, const _Tpvec& b)
+{ return _Tpvec(vec_interleave_mergeh(a.val, b.val)); }
+
+template <typename _Tpvec>
+inline _Tpvec v_combine_interleave_high(const _Tpvec& a, const _Tpvec& b)
+{ return _Tpvec(vec_interleave_mergel(a.val, b.val)); }
 
 ////////// Arithmetic, bitwise and comparison operations /////////
 
@@ -550,6 +560,14 @@ inline _Tpvec v_rotate_##suffix(const _Tpvec& a)                                
     if (wd > 15)                                                                \
         return _Tpvec();                                                        \
     return _Tpvec((cast)shf(vec_uchar16_c(a.val), vec_uchar16_sp(wd << 3)));    \
+}                                                                               \
+template<int imm>                                                               \
+inline _Tpvec v_rotate_##suffix##_byte(const _Tpvec& a)                         \
+{                                                                               \
+    const int wd = imm;                                                         \
+    if (wd > 15)                                                                \
+        return _Tpvec();                                                        \
+    return _Tpvec((cast)shf(vec_uchar16_c(a.val), vec_uchar16_sp(wd << 3)));    \
 }
 
 #define OPENCV_IMPL_VSX_ROTATE_LR(_Tpvec, cast)     \
@@ -614,15 +632,34 @@ inline _Tpvec v_extract(const _Tpvec& a, const _Tpvec& b)
 ////////// Reduce and mask /////////
 
 /** Reduce **/
+inline short v_reduce_sum(const v_int8x16& a)
+{
+    const vec_int4 zero = vec_int4_z;
+    return saturate_cast<short>(vec_extract(vec_sums(vec_sum4s(a.val, zero), zero), 3));
+}
+
+inline short v_reduce_sum(const v_uint8x16& a)
+{
+    const vec_uint4 zero = vec_uint4_z;
+    const vec_int4 zero_ = vec_int4_z;
+    return saturate_cast<short>(vec_extract(vec_sums((vec_int4)(vec_sum4s(a.val, zero)), zero_), 3));
+}
+
 inline short v_reduce_sum(const v_int16x8& a)
 {
     const vec_int4 zero = vec_int4_z;
     return saturate_cast<short>(vec_extract(vec_sums(vec_sum4s(a.val, zero), zero), 3));
 }
+
 inline ushort v_reduce_sum(const v_uint16x8& a)
 {
     const vec_int4 v4 = vec_int4_c(vec_unpackhu(vec_adds(a.val, vec_sld(a.val, a.val, 8))));
     return saturate_cast<ushort>(vec_extract(vec_sums(v4, vec_int4_z), 3));
+}
+
+inline double v_reduce_sum(const v_float64x2& a)
+{
+    return vec_extract(vec_add(a.val, vec_sldw(a.val, a.val, 2)), 0);
 }
 
 #define OPENCV_HAL_IMPL_VSX_REDUCE_OP_4(_Tpvec, _Tpvec2, scalartype, suffix, func) \
@@ -797,7 +834,9 @@ OPENCV_HAL_IMPL_VSX_BIN_FUNC(v_absdiff, vec_absd)
 inline _Tpvec2 func(const _Tpvec& a, const _Tpvec& b)                       \
 { return _Tpvec2(cast(intrin(a.val, b.val))); }
 
+OPENCV_HAL_IMPL_VSX_BIN_FUNC2(v_uint8x16,v_uint8x16, vec_uchar16_c, v_absdiff, vec_absds)
 OPENCV_HAL_IMPL_VSX_BIN_FUNC2(v_int8x16, v_uint8x16, vec_uchar16_c, v_absdiff, vec_absd)
+OPENCV_HAL_IMPL_VSX_BIN_FUNC2(v_uint16x8,v_uint16x8, vec_ushort8_c, v_absdiff, vec_absds)
 OPENCV_HAL_IMPL_VSX_BIN_FUNC2(v_int16x8, v_uint16x8, vec_ushort8_c, v_absdiff, vec_absd)
 OPENCV_HAL_IMPL_VSX_BIN_FUNC2(v_int32x4, v_uint32x4, vec_uint4_c, v_absdiff, vec_absd)
 OPENCV_HAL_IMPL_VSX_BIN_FUNC2(v_int64x2, v_uint64x2, vec_udword2_c, v_absdiff, vec_absd)
@@ -806,10 +845,10 @@ OPENCV_HAL_IMPL_VSX_BIN_FUNC2(v_int64x2, v_uint64x2, vec_udword2_c, v_absdiff, v
 
 /** Rounding **/
 inline v_int32x4 v_round(const v_float32x4& a)
-{ return v_int32x4(vec_cts(vec_round(a.val))); }
+{ return v_int32x4(vec_cts(vec_rint(a.val))); }
 
 inline v_int32x4 v_round(const v_float64x2& a)
-{ return v_int32x4(vec_mergesqo(vec_ctso(vec_round(a.val)), vec_int4_z)); }
+{ return v_int32x4(vec_mergesqo(vec_ctso(vec_rint(a.val)), vec_int4_z)); }
 
 inline v_int32x4 v_floor(const v_float32x4& a)
 { return v_int32x4(vec_cts(vec_floor(a.val))); }

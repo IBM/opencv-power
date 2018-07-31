@@ -108,6 +108,17 @@ cvRound( double value )
         fistp t;
     }
     return t;
+#elif (defined CV_VSX)
+    int t;
+    double rvalue;
+    __asm__
+    (
+      "fctid %1,%2\n"
+      "mfvsrd %0,%1\n"
+        : "=r" (t), "=d" (rvalue)
+        : "d" (value)
+    );
+    return t;
 #elif defined CV_ICC || defined __GNUC__
 # if defined ARM_ROUND_DBL
     ARM_ROUND_DBL(value);
@@ -192,6 +203,17 @@ CV_INLINE int cvRound(float value)
         fld value;
         fistp t;
     }
+    return t;
+#elif (defined CV_VSX)
+    int t;
+    double rvalue;
+    __asm__
+    (
+      "fctiw %1,%2\n"
+      "mfvsrd %0,%1\n"
+        : "=r" (t), "=f" (rvalue)
+        : "f" (value)
+    );
     return t;
 #elif defined CV_ICC || defined __GNUC__
 # if defined ARM_ROUND_FLT

@@ -45,6 +45,7 @@
 #include "opencl_kernels_imgproc.hpp"
 #include <iostream>
 #include "hal_replacement.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 /****************************************************************************************\
                      Basic Morphological Operations: Erosion & Dilation
@@ -579,6 +580,496 @@ typedef MorphColumnFVec<VMax32f> DilateColumnVec32f;
 
 typedef MorphIVec<VMin8u> ErodeVec8u;
 typedef MorphIVec<VMax8u> DilateVec8u;
+typedef MorphIVec<VMin16u> ErodeVec16u;
+typedef MorphIVec<VMax16u> DilateVec16u;
+typedef MorphIVec<VMin16s> ErodeVec16s;
+typedef MorphIVec<VMax16s> DilateVec16s;
+typedef MorphFVec<VMin32f> ErodeVec32f;
+typedef MorphFVec<VMax32f> DilateVec32f;
+
+#if CV_VSX
+
+template<typename Treturn, typename Tload, size_t esz> struct VMinOp
+{
+    typedef Treturn rtype;
+    typedef Tload ltype;
+    enum { ESZ = esz };
+    const int op = 0;
+    Treturn operator ()(const Treturn a, const Treturn b) const { return v_min(a, b); }
+};
+
+template<typename Treturn, typename Tload, size_t esz> struct VMaxOp
+{
+    typedef Treturn rtype;
+    typedef Tload ltype;
+    enum { ESZ = esz };
+    const int op = 1;
+    Treturn operator ()(const Treturn a, const Treturn b) const { return v_max(a, b); }
+};
+typedef VMinOp<v_uint8x16, uchar, 1> VMin8u;
+typedef VMaxOp<v_uint8x16, uchar, 1> VMax8u;
+typedef VMinOp<v_int8x16,  char,  1> VMin8s;
+typedef VMaxOp<v_int8x16,  char,  1> VMax8s;
+typedef VMinOp<v_uint16x8, ushort,2> VMin16u;
+typedef VMaxOp<v_uint16x8, ushort,2> VMax16u;
+typedef VMinOp<v_int16x8,  short, 2> VMin16s;
+typedef VMaxOp<v_int16x8,  short, 2> VMax16s;
+//typedef VMaxOp<v_int32x4,  int,   4> VMax32s;
+//typedef VMinOp<v_int32x4,  int,   4> VMin32s;
+//typedef VMaxOp<v_int64x2,  long,  8> VMax64s;
+//typedef VMinOp<v_int64x2,  long,  8> VMin64s;
+
+typedef VMinOp<v_float32x4, float, 0> VMin32f;
+typedef VMaxOp<v_float32x4, float, 0> VMax32f;
+
+template<class VecUpdate> struct MorphRowIVec
+{
+    enum { ESZ = VecUpdate::ESZ };
+    typedef typename VecUpdate::ltype Tload;
+    typedef typename VecUpdate::rtype Treturn;
+
+    MorphRowIVec(int _ksize, int _anchor) : ksize(_ksize), anchor(_anchor) {}
+    int operator()(const uchar* src_in, uchar* dst_in, int width, int cn) const
+    {
+        uchar *src1 = const_cast<uchar*>(src_in);
+        Tload *src = reinterpret_cast<Tload *>(src1);
+        Tload *dst = reinterpret_cast<Tload *>(dst_in);
+
+        int stride = 16/sizeof(src[0]);
+        if( !checkHardwareSupport(CV_CPU_VSX) || width < stride )
+            return 0;
+        int i=0, k, _ksize = ksize*cn;
+        //make width%4==0
+        width = (width & -4)*cn;
+        VecUpdate updateOp;
+
+        for( i = 0; i <= width - stride; i += stride )
+        {
+            const Tload *sptr = src + i;
+            Treturn s = v_load(sptr);
+            for( k = cn; k < _ksize; k += cn )
+            {
+                Treturn x = v_load(src + i + k);
+                s = updateOp(s, x);
+            }
+            v_store((dst + i), s);
+        }
+        return i;
+    }
+
+    int ksize, anchor;
+};
+
+template<class VecUpdate> struct MorphRowFVec
+{
+    MorphRowFVec(int _ksize, int _anchor) : ksize(_ksize), anchor(_anchor) {}
+    int operator()(const uchar* src, uchar* dst, int width, int cn) const
+    {
+        if( !checkHardwareSupport(CV_CPU_VSX) )
+            return 0;
+        int i, k, _ksize = ksize*cn;
+        width = (width & -4)*cn;
+        VecUpdate updateOp;
+
+        for( i = 0; i < width; i += 4 )
+        {
+            v_float32x4 s = v_load((const float*)src + i);
+            for( k = cn; k < _ksize; k += cn )
+            {
+                v_float32x4 x = v_load((const float*)src + i + k);
+                s = updateOp(s, x);
+            }
+            v_store((float*)dst + i, s);
+        }
+
+        return i;
+    }
+
+    int ksize, anchor;
+};
+
+template<class VecUpdate> struct MorphColumnIVec
+{
+    enum { ESZ = VecUpdate::ESZ };
+
+    typedef typename VecUpdate::ltype Tload;
+    typedef typename VecUpdate::rtype Treturn;
+    MorphColumnIVec(int _ksize, int _anchor) : ksize(_ksize), anchor(_anchor) {}
+    int operator()( const uchar** src_in, uchar* dst_in, int dststep, int count, int width) const
+    {
+        if( !checkHardwareSupport(CV_CPU_VSX) )
+            return 0;
+        int i = 0, k, _ksize = ksize;
+
+        VecUpdate updateOp;
+        for( i = 0; i < count + ksize - 1; i++ )
+            CV_Assert( ((size_t)src_in[i] & 15) == 0 );
+
+        uchar **src1 = const_cast<uchar **>(src_in);
+        Tload **src = reinterpret_cast<Tload **>(src1);
+        Tload *dst = reinterpret_cast<Tload *>(dst_in);
+
+        int stride = 32/sizeof(src[0][0]);
+        if(width < stride ) return 0;
+        dststep /= sizeof(dst[0]);
+        for( ; _ksize > 1 && count > 1; count -= 2, dst += dststep*2, src += 2 )
+        {
+            for( i = 0; i < width - stride; i += stride )
+            {
+                const Tload* sptr = src[1] + i;
+                Treturn s0 = v_load(sptr);
+                Treturn s1 = v_load(sptr + stride/2);
+                Treturn x0=s0, x1=s1;
+
+               for( k = 2; k < _ksize; k++ )
+                {
+                    sptr = src[k] + i;
+                    x0 = v_load(sptr);
+                    x1 = v_load(sptr + stride/2);
+                    s0 = updateOp(s0, x0);
+                    s1 = updateOp(s1, x1);
+                }
+
+                sptr = src[0] + i;
+                x0 = v_load(sptr);
+                x1 = v_load(sptr + stride/2);
+                v_store((dst + i), updateOp(s0, x0));
+                v_store((dst + i + stride/2), updateOp(s1, x1));
+
+                sptr = src[k] + i;
+                x0 = v_load(sptr);
+                x1 = v_load((sptr + stride/2));
+                v_store((dst + dststep + i), updateOp(s0, x0));
+                v_store((dst + dststep + i + stride/2), updateOp(s1, x1));
+            }
+
+            for( ; i < width; i++ )
+            {
+                Tload s0 = src[1][i];
+
+                for( k = 2; k < _ksize; k++ ){
+                    if(updateOp.op == 1){
+                       s0 = ((s0 >= src[k][i]) ? s0 : src[k][i]);
+                    }
+                    else{
+                       s0 = (s0 <= src[k][i]) ? s0 : src[k][i];
+                    }
+                }
+
+               if(updateOp.op == 1){
+                  dst[i] = ((s0 >= src[0][i])? s0 : src[0][i]);
+                  dst[i+dststep] = ((s0 >= src[k][i]) ? s0 : src[k][i]);
+               }
+               else{
+                  dst[i] = ((s0 <= src[0][i])? s0 : src[0][i]);
+                  dst[i+dststep] = ((s0 <= src[k][i]) ? s0 : src[k][i]);
+               }
+
+            }
+        }
+
+        for( ;  count > 0; count--, dst += dststep, src++ )
+        {
+            for( i = 0; i <= width - stride; i += stride )
+            {
+                const Tload* sptr = src[0] + i;
+                Treturn s0 = v_load(sptr);
+                Treturn s1 = v_load(sptr + stride/2);
+                Treturn x0=s0, x1=s1;
+
+                for( k = 1; k < _ksize; k++ )
+                {
+                    sptr = src[k] + i;
+                    x0 = v_load(sptr);
+                    x1 = v_load((sptr + stride/2));
+                    s0 = updateOp(s0, x0);
+                    s1 = updateOp(s1, x1);
+                }
+                v_store((dst + i), s0);
+                v_store((dst + i + stride/2), s1);
+            }
+
+            for( ; i < width; i++ )
+            {
+                Tload s0 = src[0][i];
+                for( k = 1; k < _ksize; k++ ){
+                    if(updateOp.op == 1){
+                       s0 = ((s0 >= src[k][i]) ? s0 : src[k][i]);
+                    }else{
+                       s0 = ((s0 <= src[k][i]) ? s0 : src[k][i]);
+                    }
+                }
+                dst[i] = s0;
+            }
+        }
+        return i;
+    }
+
+    int ksize, anchor;
+};
+
+template<class VecUpdate> struct MorphColumnFVec
+{
+    MorphColumnFVec(int _ksize, int _anchor) : ksize(_ksize), anchor(_anchor) {}
+    int operator()(const uchar** _src, uchar* _dst, int dststep, int count, int width) const
+    {
+        if( !checkHardwareSupport(CV_CPU_VSX) )
+            return 0;
+        int i = 0, k, _ksize = ksize;
+        VecUpdate updateOp;
+
+        for( i = 0; i < count + ksize - 1; i++ )
+            CV_Assert( ((size_t)_src[i] & 15) == 0 );
+
+        const float** src = (const float**)_src;
+        float* dst = (float*)_dst;
+        dststep /= sizeof(dst[0]);
+
+        for( ; _ksize > 1 && count > 1; count -= 2, dst += dststep*2, src += 2 )
+        {
+            for( i = 0; i <= width - 16; i += 16 )
+            {
+                const float* sptr = src[1] + i;
+                v_float32x4 s0 = v_load(sptr);
+                v_float32x4 s1 = v_load(sptr + 4);
+                v_float32x4 s2 = v_load(sptr + 8);
+                v_float32x4 s3 = v_load(sptr + 12);
+                v_float32x4 x0, x1, x2, x3;
+
+                for( k = 2; k < _ksize; k++ )
+                {
+                    sptr = src[k] + i;
+                    x0 = v_load(sptr);
+                    x1 = v_load(sptr + 4);
+                    s0 = updateOp(s0, x0);
+                    s1 = updateOp(s1, x1);
+                    x2 = v_load(sptr + 8);
+                    x3 = v_load(sptr + 12);
+                    s2 = updateOp(s2, x2);
+                    s3 = updateOp(s3, x3);
+                }
+
+                sptr = src[0] + i;
+                x0 = v_load(sptr);
+                x1 = v_load(sptr + 4);
+                x2 = v_load(sptr + 8);
+                x3 = v_load(sptr + 12);
+                v_store(dst + i, updateOp(s0, x0));
+                v_store(dst + i + 4, updateOp(s1, x1));
+                v_store(dst + i + 8, updateOp(s2, x2));
+                v_store(dst + i + 12, updateOp(s3, x3));
+
+                sptr = src[k] + i;
+                x0 = v_load(sptr);
+                x1 = v_load(sptr + 4);
+                x2 = v_load(sptr + 8);
+                x3 = v_load(sptr + 12);
+                v_store(dst + dststep + i, updateOp(s0, x0));
+                v_store(dst + dststep + i + 4, updateOp(s1, x1));
+                v_store(dst + dststep + i + 8, updateOp(s2, x2));
+                v_store(dst + dststep + i + 12, updateOp(s3, x3));
+            }
+
+            for( ; i <= width - 4; i += 4 )
+            {
+                    v_float32x4 s0 = v_load(src[1] + i), x0;
+
+                for( k = 2; k < _ksize; k++ )
+                {
+                    x0 = v_load(src[k] + i);
+                    s0 = updateOp(s0, x0);
+                }
+
+                x0 = v_load(src[0] + i);
+                v_store(dst + i, updateOp(s0, x0));
+                x0 = v_load(src[k] + i);
+                v_store(dst + dststep + i, updateOp(s0, x0));
+            }
+        }
+
+        for( ; count > 0; count--, dst += dststep, src++ )
+        {
+            for( i = 0; i <= width - 16; i += 16 )
+            {
+                const float* sptr = src[0] + i;
+                v_float32x4 s0 = v_load(sptr);
+                v_float32x4 s1 = v_load(sptr + 4);
+                v_float32x4 s2 = v_load(sptr + 8);
+                v_float32x4 s3 = v_load(sptr + 12);
+                v_float32x4 x0, x1, x2, x3;
+
+                for( k = 1; k < _ksize; k++ )
+                {
+                    sptr = src[k] + i;
+                    x0 = v_load(sptr);
+                    x1 = v_load(sptr + 4);
+                    s0 = updateOp(s0, x0);
+                    s1 = updateOp(s1, x1);
+                    x2 = v_load(sptr + 8);
+                    x3 = v_load(sptr + 12);
+                    s2 = updateOp(s2, x2);
+                    s3 = updateOp(s3, x3);
+                }
+                v_store(dst + i, s0);
+                v_store(dst + i + 4, s1);
+                v_store(dst + i + 8, s2);
+                v_store(dst + i + 12, s3);
+            }
+
+            for( i = 0; i <= width - 4; i += 4 )
+            {
+                v_float32x4 s0 = v_load(src[0] + i), x0;
+                for( k = 1; k < _ksize; k++ )
+                {
+                    x0 = v_load(src[k] + i);
+                    s0 = updateOp(s0, x0);
+                }
+                v_store(dst + i, s0);
+            }
+        }
+
+        return i;
+    }
+
+    int ksize, anchor;
+};
+
+template<class VecUpdate> struct MorphIVec
+{
+    enum { ESZ = VecUpdate::ESZ };
+    typedef typename VecUpdate::ltype Tload;
+    typedef typename VecUpdate::rtype Treturn;
+
+    int operator()(uchar** src_in, int nz, uchar* dst_in, int width) const
+    {
+        Tload **src = reinterpret_cast<Tload **>(src_in);
+        Tload *dst = reinterpret_cast<Tload *>(dst_in);
+        int stride = 32/sizeof(src[0][0]);
+        if( !checkHardwareSupport(CV_CPU_VSX) || width < stride  )
+            return 0;
+        int i, k;
+        //width *= ESZ;
+        VecUpdate updateOp;
+        for( i = 0; i < width - stride; i += stride )
+        {
+            const Tload *sptr = src[0] + i;
+            Treturn s0 = v_load(sptr);
+
+            Treturn s1 = v_load(sptr + stride/2);
+            Treturn x0 = s0, x1 = s1;
+            for( k = 1; k < nz; k++ )
+            {
+                sptr = src[k] + i;
+                x0 = v_load(sptr);
+                x1 = v_load(sptr + stride/2); //16/sizeof(*sptr))
+                s0 = updateOp(s0, x0);
+                s1 = updateOp(s1, x1);
+            }
+            v_store((dst + i), s0);
+            v_store((dst + i + stride/2), s1);
+        }
+
+        return i;
+    }
+};
+
+template<class VecUpdate> struct MorphFVec
+{
+    int operator()(uchar** _src, int nz, uchar* _dst, int width) const
+    {
+        if( !checkHardwareSupport(CV_CPU_VSX) )
+            return 0;
+        const float** src = (const float**)_src;
+        float* dst = (float*)_dst;
+        int i, k;
+        VecUpdate updateOp;
+
+        for( i = 0; i <= width - 16; i += 16 )
+        {
+            const float* sptr = src[0] + i;
+            v_float32x4 s0 = v_load(sptr);
+            v_float32x4 s1 = v_load(sptr + 4);
+            v_float32x4 s2 = v_load(sptr + 8);
+            v_float32x4 s3 = v_load(sptr + 12);
+            v_float32x4 x0, x1, x2, x3;
+
+            for( k = 1; k < nz; k++ )
+            {
+                sptr = src[k] + i;
+                x0 = v_load(sptr);
+                x1 = v_load(sptr + 4);
+                x2 = v_load(sptr + 8);
+                x3 = v_load(sptr + 12);
+                s0 = updateOp(s0, x0);
+                s1 = updateOp(s1, x1);
+                s2 = updateOp(s2, x2);
+                s3 = updateOp(s3, x3);
+            }
+            v_store(dst + i, s0);
+            v_store(dst + i + 4, s1);
+            v_store(dst + i + 8, s2);
+            v_store(dst + i + 12, s3);
+        }
+
+        for( ; i <= width - 4; i += 4 )
+        {
+            v_float32x4 s0 = v_load(src[0] + i), x0;
+
+            for( k = 1; k < nz; k++ )
+            {
+                x0 = v_load(src[k] + i);
+                s0 = updateOp(s0, x0);
+            }
+            v_store(dst + i, s0);
+        }
+
+        float mask[] = {1.f, 0.f, 0.f, 0.f};
+        v_float32x4 v_mask = v_load(mask);
+        for( ; i < width; i++ )
+        {
+            v_float32x4 x0;
+            v_float32x4 s0 = v_load(src[0] + i);
+            s0 = s0* v_mask;
+
+            for( k = 1; k < nz; k++ )
+            {
+                x0 = v_load(src[k] + i);
+                x0 = x0 * v_mask;
+                s0 = updateOp(s0, x0);
+            }
+            *(dst + i) = vec_extract(s0.val, 0);
+        }
+
+        return i;
+    }
+};
+
+typedef MorphRowIVec<VMin8u> ErodeRowVec8u;
+typedef MorphRowIVec<VMax8u> DilateRowVec8u;
+typedef MorphRowIVec<VMin8s> ErodeRowVec8s;
+typedef MorphRowIVec<VMax8s> DilateRowVec8s;
+typedef MorphRowIVec<VMin16u> ErodeRowVec16u;
+typedef MorphRowIVec<VMax16u> DilateRowVec16u;
+typedef MorphRowIVec<VMin16s> ErodeRowVec16s;
+typedef MorphRowIVec<VMax16s> DilateRowVec16s;
+typedef MorphRowFVec<VMin32f> ErodeRowVec32f;
+typedef MorphRowFVec<VMax32f> DilateRowVec32f;
+
+typedef MorphColumnIVec<VMin8u> ErodeColumnVec8u;
+typedef MorphColumnIVec<VMax8u> DilateColumnVec8u;
+typedef MorphColumnIVec<VMin8s> ErodeColumnVec8s;
+typedef MorphColumnIVec<VMax8s> DilateColumnVec8s;
+typedef MorphColumnIVec<VMin16u> ErodeColumnVec16u;
+typedef MorphColumnIVec<VMax16u> DilateColumnVec16u;
+typedef MorphColumnIVec<VMin16s> ErodeColumnVec16s;
+typedef MorphColumnIVec<VMax16s> DilateColumnVec16s;
+typedef MorphColumnFVec<VMin32f> ErodeColumnVec32f;
+typedef MorphColumnFVec<VMax32f> DilateColumnVec32f;
+
+typedef MorphIVec<VMin8u> ErodeVec8u;
+typedef MorphIVec<VMax8u> DilateVec8u;
+typedef MorphIVec<VMin8s> ErodeVec8s;
+typedef MorphIVec<VMax8s> DilateVec8s;
 typedef MorphIVec<VMin16u> ErodeVec16u;
 typedef MorphIVec<VMax16u> DilateVec16u;
 typedef MorphIVec<VMin16s> ErodeVec16s;

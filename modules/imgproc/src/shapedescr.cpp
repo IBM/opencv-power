@@ -39,6 +39,8 @@
 //
 //M*/
 #include "precomp.hpp"
+#include "opencv2/core/hal/intrin.hpp"
+
 namespace cv
 {
 
@@ -788,6 +790,48 @@ static Rect pointSetBoundingRect( const Mat& points )
             ymin = cvFloor(xyminf[1]);
             xmax = cvFloor(xymaxf[0]);
             ymax = cvFloor(xymaxf[1]);
+        }
+    }
+    else
+#elif CV_VSX
+    if(cv::checkHardwareSupport(CV_CPU_VSX))
+    {
+        if( !is_float )
+        {
+            v_int32x4 v_i_minval, v_i_maxval;
+            v_i_minval = v_i_maxval = (v_int32x4)(vec_ldz_l8((const int*)(&pt))); //min[0]=pt.x, min[1]=pt.y, min[2]=0, min[3]=0
+
+            for( i = 1; i < npoints; i++ )
+            {
+                //v_int32x4 v_i_ptXY = v_load((const v_int32x4*)&pts[i]);
+                v_int32x4 v_i_ptXY = (v_int32x4)(vec_ldz_l8((const int*)(&pts[i])));
+
+                v_i_minval = v_min(v_i_ptXY, v_i_minval);
+                v_i_maxval = v_max(v_i_ptXY, v_i_maxval);
+            }
+
+            xmin = vec_extract(v_i_minval.val, 0);
+            ymin = vec_extract(v_i_minval.val, 1);
+            xmax = vec_extract(v_i_maxval.val, 0);
+            ymax = vec_extract(v_i_maxval.val, 1);
+        }
+        else
+        {
+            v_float32x4 z = v_setall_f32(0.0f), v_f_minvalf = z, v_f_maxvalf = z, v_f_ptXY = v_setall_f32(0.0f);
+            v_f_minvalf = v_f_maxvalf = (v_float32x4)(vec_ldz_l8((const float *)(&pt)));
+
+            for( i = 1; i < npoints; i++ )
+            {
+                v_f_ptXY = (v_float32x4)(vec_ldz_l8((const float *)(&pts[i])));
+
+                v_f_minvalf = v_min(v_f_minvalf, v_f_ptXY);
+                v_f_maxvalf = v_max(v_f_maxvalf, v_f_ptXY);
+            }
+
+            xmin = cvFloor(vec_extract(v_f_minvalf.val, 0));
+            ymin = cvFloor(vec_extract(v_f_minvalf.val, 1));
+            xmax = cvFloor(vec_extract(v_f_maxvalf.val, 0));
+            ymax = cvFloor(vec_extract(v_f_maxvalf.val, 1));
         }
     }
     else

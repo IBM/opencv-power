@@ -42,6 +42,7 @@
 
 #include "precomp.hpp"
 #include "opencl_kernels_video.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 #if defined __APPLE__ || defined __ANDROID__
 #define SMALL_LOCALSIZE
@@ -441,6 +442,14 @@ FarnebackUpdateFlow_GaussianBlur( const Mat& _R0, const Mat& _R1,
         for( i = 0; i <= m; i++ )
             _mm_store_ps(simd_kernel + i*4, _mm_set1_ps(kernel[i]));
     }
+#elif CV_VSX
+    float* simd_kernel = alignPtr(kernel + m+1, 16);
+    volatile bool useSIMD = checkHardwareSupport(CV_CPU_VSX);
+    if( useSIMD )
+    {
+        for( i = 0; i <= m; i++ )
+            v_store(simd_kernel + i*4, v_setall_f32(kernel[i]));
+    }
 #endif
 
     // compute blur(G)*flow=blur(h)
@@ -507,6 +516,56 @@ FarnebackUpdateFlow_GaussianBlur( const Mat& _R0, const Mat& _R1,
                 _mm_store_ps(vsum + x, s0);
             }
         }
+#elif CV_VSX
+        if( useSIMD )
+        {
+            for( ; x <= width*5 - 16; x += 16 )
+            {
+                const float *sptr0 = srow[m], *sptr1;
+                v_float32x4 g4 = v_load(simd_kernel);
+                v_float32x4 s0, s1, s2, s3;
+                s0 = v_load(sptr0 + x) * g4;
+                s1 = v_load(sptr0 + x + 4) * g4;
+                s2 = v_load(sptr0 + x + 8) * g4;
+                s3 = v_load(sptr0 + x + 12) * g4;
+
+                for( i = 1; i <= m; i++ )
+                {
+                    v_float32x4 x0, x1;
+                    sptr0 = srow[m+i], sptr1 = srow[m-i];
+                    g4 = v_load(simd_kernel + i*4);
+                    x0 = v_load(sptr0 + x) + v_load(sptr1 + x);
+                    x1 = v_load(sptr0 + x + 4) + v_load(sptr1 + x + 4);
+                    s0 = v_muladd(x0, g4, s0);
+                    s1 = v_muladd(x1, g4, s1);
+                    x0 = v_load(sptr0 + x + 8) + v_load(sptr1 + x + 8);
+                    x1 = v_load(sptr0 + x + 12) + v_load(sptr1 + x + 12);
+                    s2 = v_muladd(x0, g4, s2);
+                    s3 = v_muladd(x1, g4, s3);
+                }
+
+                v_store(vsum + x, s0);
+                v_store(vsum + x + 4, s1);
+                v_store(vsum + x + 8, s2);
+                v_store(vsum + x + 12, s3);
+            }
+
+            for( ; x <= width*5 - 4; x += 4 )
+            {
+                const float *sptr0 = srow[m], *sptr1;
+                v_float32x4 g4 = v_load(simd_kernel);
+                v_float32x4 s0 = v_load(sptr0 + x) * g4;
+
+                for( i = 1; i <= m; i++ )
+                {
+                    sptr0 = srow[m+i], sptr1 = srow[m-i];
+                    g4 = v_load(simd_kernel + i*4);
+                    v_float32x4 x0 = v_load(sptr0 + x) + v_load(sptr1 + x);
+                    s0 = v_muladd(x0, g4, s0);
+                }
+                v_store(vsum + x, s0);
+            }
+        }
 #endif
         for( ; x < width*5; x++ )
         {
@@ -547,6 +606,28 @@ FarnebackUpdateFlow_GaussianBlur( const Mat& _R0, const Mat& _R1,
 
                 _mm_store_ps(hsum + x, s0);
                 _mm_store_ps(hsum + x + 4, s1);
+            }
+        }
+#elif CV_VSX
+        if( useSIMD )
+        {
+            for( ; x <= width*5 - 8; x += 8 )
+            {
+                v_float32x4 g4 = v_load(simd_kernel);
+                v_float32x4 s0 = v_load(vsum + x) * g4;
+                v_float32x4 s1 = v_load(vsum + x + 4) * g4;
+
+                for( i = 1; i <= m; i++ )
+                {
+                    g4 = v_load(simd_kernel + i*4);
+                    v_float32x4 x0 = v_load(vsum + x - i*5) + v_load(vsum + x+ i*5);
+                    v_float32x4 x1 = v_load(vsum + x - i*5 + 4) + v_load(vsum + x+ i*5 + 4);
+                    s0 = v_muladd(x0, g4, s0);
+                    s1 = v_muladd(x1, g4, s1);
+                }
+
+                v_store(hsum + x, s0);
+                v_store(hsum + x + 4, s1);
             }
         }
 #endif
