@@ -80,6 +80,7 @@
 #define USE_SSE4_2  (cv::checkHardwareSupport(CV_CPU_SSE4_2))
 #define USE_AVX  (cv::checkHardwareSupport(CV_CPU_AVX))
 #define USE_AVX2  (cv::checkHardwareSupport(CV_CPU_AVX2))
+#define USE_VSX  (cv::checkHardwareSupport(CV_CPU_VSX))
 
 #include "opencv2/core/hal/hal.hpp"
 #include "opencv2/core/hal/intrin.hpp"
@@ -89,7 +90,6 @@
 #include "arithm_core.hpp"
 #include "hal_replacement.hpp"
 
-#define USE_VSX  (cv::checkHardwareSupport(CV_CPU_VSX))
 #define GET_OPTIMIZED(func) (func)
 
 namespace cv

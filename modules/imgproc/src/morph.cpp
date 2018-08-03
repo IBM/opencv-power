@@ -587,7 +587,7 @@ typedef MorphIVec<VMax16s> DilateVec16s;
 typedef MorphFVec<VMin32f> ErodeVec32f;
 typedef MorphFVec<VMax32f> DilateVec32f;
 
-#if CV_VSX
+#elif CV_VSX
 
 template<typename Treturn, typename Tload, size_t esz> struct VMinOp
 {

@@ -674,7 +674,7 @@ cvRunHaarClassifierCascadeSum( const CvHaarClassifierCascade* _cascade,
 {
 #if CV_HAAR_USE_AVX
     bool haveAVX = CV_CPU_HAS_SUPPORT_AVX;
-#elif CV_HAAR_USE_SSE
+#elif defined CV_HAAR_USE_SSE
     bool haveSSE2 = cv::checkHardwareSupport(CV_CPU_SSE2);
 #elif CV_VSX
     bool haveVSX = cv::checkHardwareSupport(CV_CPU_VSX);
@@ -2719,6 +2719,7 @@ double icvEvalHidHaarStumpClassifierTwoRectVSX(CvHidHaarClassifier* classifier,
 
     return v_reduce_sum(out1);
 }
+#endif
 
 #if defined __GNUC__ && __GNUC__ >= 8
 #pragma GCC diagnostic pop

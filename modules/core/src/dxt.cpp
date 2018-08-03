@@ -637,11 +637,8 @@ struct OcvDftOptions {
     bool noPermute;
     bool isComplex;
 
-#if CV_SSE3
-    bool haveSSE3;
-#elif CV_VSX
-    bool haveVSX;
-#endif
+    bool haveSSE3 = false;
+    bool haveVSX = false;
 
     DFTFunc dft_func;
     bool useIpp;
@@ -670,8 +667,11 @@ struct OcvDftOptions {
 #endif
         dft_func = 0;
 
+#if CV_SSE3
         haveSSE3 = checkHardwareSupport(CV_CPU_SSE3);
+#elif CV_VSX
         haveVSX = checkHardwareSupport(CV_CPU_VSX);
+#endif
     }
 };
 

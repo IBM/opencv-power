@@ -119,15 +119,6 @@ void cvtScaleHalf_SIMD16f32f( const short* src, size_t sstep, float* dst, size_t
     }
 }
 #else
-#ifdef CV_VSX
-/*
- * P8 doesn't support FP16.
- * In P9 we have xvcvsphp/xvcvhpsp, but they didn't integrated into GCC intrinsics
- * yet.
- * It is an option to implement it with inline assembly in P9, which can be done
- * later if it is identified as a bottleneck during perf.
- */
-#endif
 #error "Unsupported build configuration"
 #endif
 }

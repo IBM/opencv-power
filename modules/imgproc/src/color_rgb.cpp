@@ -1394,6 +1394,7 @@ struct RGB2Gray<uchar>
 };
 
 template <>
+struct RGB2Gray<ushort>
 {
     typedef ushort channel_type;
 

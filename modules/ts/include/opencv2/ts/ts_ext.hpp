@@ -17,7 +17,7 @@ extern int testThreads;
 
 // check for required "opencv_test" namespace
 #if !defined(CV_TEST_SKIP_NAMESPACE_CHECK) && defined(__OPENCV_BUILD)
-#define CV__TEST_NAMESPACE_CHECK required_opencv_test_namespace = true;
+#define CV__TEST_NAMESPACE_CHECK opencv_test::required_opencv_test_namespace = true;
 #else
 #define CV__TEST_NAMESPACE_CHECK  // nothing
 #endif

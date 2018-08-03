@@ -157,8 +157,6 @@ struct VZeroUpperGuard {
 #  undef pixel
 #  undef bool
 #  define CV_VSX 1
-// TODO: temp workaround to enable others to use our build
-#include "cv_cpu_helper.h"
 #endif
 
 #endif // !__OPENCV_BUILD && !__CUDACC (Compatibility code)

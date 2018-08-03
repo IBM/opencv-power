@@ -11,6 +11,7 @@
 #include "precomp.hpp"
 #include "color.hpp"
 
+using namespace cv;
 using cv::softfloat;
 
 static const float * splineBuild(const softfloat* f, size_t n)
@@ -413,7 +414,7 @@ struct RGB2XYZ_f<float>
 
     RGB2XYZ_f(int _srccn, int blueIdx, const float* _coeffs) : srccn(_srccn)
     {
-        memcpy(coeffs, _coeffs ? _coeffs : sRGB2XYZ_D65, 9*sizeof(coeffs[0]));
+        memcpy(coeffs, _coeffs ? _coeffs : (float*)sRGB2XYZ_D65, 9*sizeof(coeffs[0]));
         if(blueIdx == 0)
         {
             std::swap(coeffs[0], coeffs[2]);
@@ -1208,7 +1209,7 @@ struct XYZ2RGB_f<float>
     XYZ2RGB_f(int _dstcn, int _blueIdx, const float* _coeffs)
     : dstcn(_dstcn), blueIdx(_blueIdx)
     {
-        memcpy(coeffs, _coeffs ? _coeffs : XYZ2sRGB_D65, 9*sizeof(coeffs[0]));
+        memcpy(coeffs, _coeffs ? _coeffs : (float*)XYZ2sRGB_D65, 9*sizeof(coeffs[0]));
         if(blueIdx == 0)
         {
             std::swap(coeffs[0], coeffs[6]);

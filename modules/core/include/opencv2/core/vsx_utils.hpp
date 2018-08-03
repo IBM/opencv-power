@@ -647,11 +647,19 @@ VSX_IMPL_CONV_ODD_2_4(vec_uint4,  vec_double2, vec_ctuo, vec_ctu)
 // Store higher 8 byte
 #define vec_st_h8(v, p) *((uint64*)(p)) = vec_extract(vec_udword2_c(v), 1)
 
-// Load 64-bits of integer data to lower part
+/*
+ * vec_ld_l8(ptr) -> Load 64-bits of integer data to lower part
+ * vec_ldz_l8(ptr) -> Load 64-bits of integer data to lower part and zero upper part
+ */
 #define VSX_IMPL_LOAD_L8(Tvec, Tp)                  \
 VSX_FINLINE(Tvec) vec_ld_l8(const Tp *p)            \
-{ return ((Tvec)vec_promote(*((uint64*)p), 0)); }
-
+{ return ((Tvec)vec_promote(*((uint64*)p), 0)); }   \
+VSX_FINLINE(Tvec) vec_ldz_l8(const Tp *p)                                       \
+{                                                                               \
+    /* TODO: try (Tvec)(vec_udword2{*((uint64*)p), 0}) */                       \
+    static const vec_bdword2 mask = {0xFFFFFFFFFFFFFFFF, 0x0000000000000000};   \
+    return vec_and(vec_ld_l8(p), (Tvec)mask);                                   \
+}
 VSX_IMPL_LOAD_L8(vec_uchar16, uchar)
 VSX_IMPL_LOAD_L8(vec_char16,  schar)
 VSX_IMPL_LOAD_L8(vec_ushort8, ushort)
