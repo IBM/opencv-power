@@ -35,6 +35,7 @@ $ make -j20
 $ make install
 ```
 
+* The example compilation guide is using AT which is bind to Python3. Use other compilers for python2.
 * You could specify the compiler as your default GCC/G++;
 * It is highly recommend to turn OpenMP on for performance consideration, and it is better to set the environment  OMP_PROC_BIND=true and proper OMP_NUM_THREADS for affinity;
 * If you are compiling the code on a POWER8 machine, please replace the cmake c/c++ flags as power8.
