@@ -1037,7 +1037,7 @@ template<class VecUpdate> struct MorphFVec
                 x0 = x0 * v_mask;
                 s0 = updateOp(s0, x0);
             }
-            *(dst + i) = vec_extract(s0.val, 0);
+            *(dst + i) = (s0.val)[0];
         }
 
         return i;

@@ -799,21 +799,20 @@ static Rect pointSetBoundingRect( const Mat& points )
         if( !is_float )
         {
             v_int32x4 v_i_minval, v_i_maxval;
-            v_i_minval = v_i_maxval = (v_int32x4)(vec_ldz_l8((const int*)(&pt))); //min[0]=pt.x, min[1]=pt.y, min[2]=0, min[3]=0
+            v_i_minval = v_i_maxval = (v_int32x4)(vec_ldz_l8((const int*)(&pt))); 
 
             for( i = 1; i < npoints; i++ )
             {
-                //v_int32x4 v_i_ptXY = v_load((const v_int32x4*)&pts[i]);
                 v_int32x4 v_i_ptXY = (v_int32x4)(vec_ldz_l8((const int*)(&pts[i])));
 
                 v_i_minval = v_min(v_i_ptXY, v_i_minval);
                 v_i_maxval = v_max(v_i_ptXY, v_i_maxval);
             }
 
-            xmin = vec_extract(v_i_minval.val, 0);
-            ymin = vec_extract(v_i_minval.val, 1);
-            xmax = vec_extract(v_i_maxval.val, 0);
-            ymax = vec_extract(v_i_maxval.val, 1);
+            xmin = (v_i_minval.val)[0];
+            ymin = (v_i_minval.val)[1];
+            xmax = (v_i_maxval.val)[0];
+            ymax = (v_i_maxval.val)[1];
         }
         else
         {
